@@ -5,6 +5,7 @@ Subscribes to hooks and wires the tracer to the code generator.
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 logger = logging.getLogger("hermes-unroll")
@@ -160,7 +161,11 @@ def register(ctx):
     """Called by Hermes plugin loader on session start."""
     global _recorder
 
-    # Lazy import so the module is importable before tracer.py is on sys.path
+    # Ensure the plugin directory is on sys.path so sibling modules import
+    _plugin_dir = str(Path(__file__).resolve().parent)
+    if _plugin_dir not in sys.path:
+        sys.path.insert(0, _plugin_dir)
+
     from tracer import TraceRecorder
 
     _recorder = TraceRecorder()
