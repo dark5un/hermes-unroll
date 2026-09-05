@@ -135,6 +135,7 @@ def _generate_trace(session_id: str, completed: bool = True):
             system_prompt=_recorder.session.system_prompt,
             user_message=_recorder.session.initial_user_message,
             final_response=_recorder.session.final_response,
+            started_at=_recorder.session.started_at,
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
     except BaseException as exc:  # noqa: BLE001
