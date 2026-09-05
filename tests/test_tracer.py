@@ -149,13 +149,16 @@ class TestTraceRecorder:
         assert len(events) == 2
         assert events[0].kind == "system_prompt"
 
-    def test_finalize_does_not_mutate_internal_state(self):
-        """finalize returns the same list; no side effect beyond return."""
+    def test_finalize_seals_recorder_and_returns_copy(self):
+        """finalize seals the recorder: idempotent, post records dropped."""
         r = TraceRecorder()
         r.record("llm_call", {})
         events1 = r.finalize()
         events2 = r.finalize()
-        assert events1 is events2  # same list reference
+        assert events1 == events2 and events1 is not events2  # copy, idempotent
+        r.record("llm_call", {"response_text": "late"})
+        assert len(r.session.events) == 1  # late record dropped
+        assert r.finalized is True
 
     def test_recorder_starts_with_empty_session_fields(self):
         """Initial session has empty ID/model/provider before set_metadata."""

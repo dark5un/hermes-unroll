@@ -42,9 +42,17 @@ class TraceRecorder:
 
     def __init__(self) -> None:
         self.session = TraceSession(session_id="", model="", provider="")
+        self.finalized = False
 
     def record(self, kind: str, data: dict) -> None:
-        """Append a TraceEvent with the given kind and data."""
+        """Append a TraceEvent with the given kind and data.
+
+        After finalize() the recorder is sealed: further records are
+        dropped (logged at debug) so post-finalize hooks cannot leak
+        events into an already-written trace.
+        """
+        if self.finalized:
+            return
         self.session.events.append(TraceEvent(kind=kind, data=data or {}))
 
     def set_metadata(
@@ -66,5 +74,6 @@ class TraceRecorder:
             self.session.tags = list(tags)
 
     def finalize(self) -> list[TraceEvent]:
-        """Return the accumulated events list."""
-        return self.session.events
+        """Return a copy of the accumulated events and seal the recorder."""
+        self.finalized = True
+        return list(self.session.events)

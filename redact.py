@@ -53,3 +53,54 @@ def redact_event(event, custom_patterns: list[str] | None = None):
     new_event = copy.deepcopy(event)
     new_event.data = _redact_value(new_event.data, custom_patterns)
     return new_event
+
+
+# Keys whose values are authentication material regardless of shape.
+_STRUCTURED_SECRET_KEYS = frozenset({
+    "authorization", "api_key", "apikey", "token", "password",
+    "cookie", "secret", "credential", "access_token", "refresh_token",
+    "client_secret", "session_token", "auth",
+})
+
+
+def _redact_structured(obj: object) -> object:
+    """Replace values under known secret key names at any nesting depth."""
+    if isinstance(obj, dict):
+        return {
+            k: ("[REDACTED:structured]" if k.lower() in _STRUCTURED_SECRET_KEYS else _redact_structured(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_structured(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_redact_structured(v) for v in obj)
+    return obj
+
+
+def redact_session_metadata(
+    system_prompt: str = "",
+    user_message: str = "",
+    final_response: str = "",
+    active_skills: list | None = None,
+    tags: list | None = None,
+    provider_config: dict | None = None,
+    custom_patterns: list[str] | None = None,
+) -> dict:
+    """Redact every generated string field, not just event payloads.
+
+    Session metadata (system prompt, initial/final text, skill inventory,
+    tags, provider config) previously reached the generator raw. Returns
+    a dict with the same keys, all values redacted — both pattern-based
+    (keys, emails, tokens) and structured (known secret key names in
+    provider_config at any depth).
+    """
+    redacted_provider = _redact_structured(provider_config or {})
+    redacted_provider = _redact_value(redacted_provider, custom_patterns)
+    return {
+        "system_prompt": redact_text(system_prompt or "", custom_patterns),
+        "user_message": redact_text(user_message or "", custom_patterns),
+        "final_response": redact_text(final_response or "", custom_patterns),
+        "active_skills": [_redact_value(s, custom_patterns) for s in (active_skills or [])],
+        "tags": [_redact_value(t, custom_patterns) for t in (tags or [])],
+        "provider_config": redacted_provider,
+    }

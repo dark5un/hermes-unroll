@@ -25,6 +25,30 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Exactly-once trace lifecycle: `on_session_end` fires per turn and now only
+  updates completion state — the single write happens at
+  `on_session_finalize`, which pops and seals the context under the sessions
+  lock. `TraceRecorder.finalize()` returns a copy and seals the recorder;
+  post-finalize records are dropped. Duplicate finalize is byte-identical.
+- Redaction is fail-closed and covers session metadata: new
+  `redact_session_metadata()` redacts system_prompt, initial/final text,
+  skill/tag lists, and provider_config (pattern + structured secret keys);
+  any redaction failure (or a failed `redact` import) aborts persistence
+  instead of writing unredacted data. Deletes both fail-open `except` blocks.
+- Atomic confidential writes: `generate_trace_program()` writes via temp
+  file + fsync + `chmod 0600` + `os.replace()`, sets the traces dir `0700`,
+  and appends a content-hash filename suffix so colliding session ids never
+  silently overwrite. Captured `provider_config` (base_url/api_mode) is now
+  passed through and emitted; keys are never embedded.
+- First-turn user message recorded exactly once via the hook's `user_message`
+  parameter (UN-9); the reverse-scan duplication is deleted.
+
+**Existing artifacts:** traces written before this fix may contain an
+unredacted system prompt / profile block at mode 0644. Re-permission with
+`chmod 0600 ~/.hermes/traces/unrolled/*.py` (and `chmod 0700` on the dir)
+or delete pre-fix traces; new traces are 0600 with metadata redacted. A
+`unroll scrub` command for old artifacts is tracked future work.
+
 - Session state is keyed by session id: new `SessionContext` dataclass
   (`recorder`, `model`, `provider`, `first_turn`, `finalized`) in
   `_sessions` dict guarded by `threading.RLock`. Every hook resolves its

@@ -83,21 +83,22 @@ def _on_post_llm_call(
             model=model,
             provider=platform,
         )
-
         for msg in conversation_history:
             if msg.get("role") == "system" and not recorder.session.system_prompt:
                 recorder.session.system_prompt = msg.get("content", "")
                 recorder.record("system_prompt", {"text": msg.get("content", "")})
-            if msg.get("role") == "user" and not recorder.session.initial_user_message:
-                recorder.session.initial_user_message = msg.get("content", "")
-                recorder.record("user_message", {"text": msg.get("content", "")})
-            if recorder.session.system_prompt and recorder.session.initial_user_message:
+            if recorder.session.system_prompt:
                 break
 
-    for msg in reversed(conversation_history):
-        if msg.get("role") == "user":
-            recorder.record("user_message", {"text": msg.get("content", "")})
-            break
+    # UN-9: the hook supplies the canonical user_message — record it once
+    # and track it as the session's initial message on first sight.
+    # The old reverse-scan of conversation_history duplicated the first-turn
+    # message (first_turn branch + scan recorded the same message twice).
+    user_message = kwargs.get("user_message")
+    if user_message:
+        if not recorder.session.initial_user_message:
+            recorder.session.initial_user_message = user_message
+        recorder.record("user_message", {"text": user_message})
 
     tool_calls = []
     for msg in reversed(conversation_history):
@@ -143,15 +144,22 @@ def _on_post_tool_call(
 
 
 def _generate_trace(session_id: str, completed: bool = True):
-    """Generate the trace file from ALL accumulated events so far."""
-    ctx = _get_session(session_id)
-    if ctx is None:
-        logger.debug("hermes-unroll: _generate_trace for unknown session %r — dropping", session_id)
-        return
-    recorder = ctx.recorder
+    """Generate the trace file from ALL accumulated events so far.
 
-    from generator import generate_trace_program
-
+    Exactly-once per session: the context is popped under the sessions
+    lock and marked finalized before any work happens, so a later
+    finalize (or a duplicate end) finds no context and writes nothing.
+    Redaction is fail-closed — any redaction failure aborts persistence
+    instead of writing unredacted data.
+    """
+    with _sessions_lock:
+        ctx = _sessions.pop(session_id, None)
+        if ctx is None or ctx.finalized:
+            logger.debug("hermes-unroll: _generate_trace for unknown/finalized session %r — dropping", session_id)
+            return None
+        ctx.finalized = True
+        recorder = ctx.recorder
+        events_snapshot = list(recorder.session.events)
     recorder.session.completed = completed
     recorder.session.final_response = (
         recorder.session.events[-1].data.get("response_text", "")
@@ -159,23 +167,30 @@ def _generate_trace(session_id: str, completed: bool = True):
         else ""
     )
 
-    events = recorder.finalize()
+    events = events_snapshot
     if not events:
-        return
+        return None
 
-    # B2: redact secrets from every event before generation (fail-open).
+    # Redact secrets from every event before generation (fail-closed:
+    # any failure aborts persistence — never write unredacted data).
     try:
-        from redact import redact_event
-
-        _redacted = []
-        for _e in events:
-            try:
-                _redacted.append(redact_event(_e))
-            except Exception:  # noqa: BLE001
-                _redacted.append(_e)
-        events = _redacted
-    except Exception:  # noqa: BLE001, S110
-        pass
+        from redact import redact_event, redact_session_metadata
+    except Exception as exc:  # noqa: BLE001 — redactor is a required dependency
+        logger.error("hermes-unroll: redaction unavailable, refusing to write trace: %s", exc)
+        return None
+    try:
+        events = [redact_event(_e) for _e in events]
+        redacted_meta = redact_session_metadata(
+            system_prompt=recorder.session.system_prompt,
+            user_message=recorder.session.initial_user_message,
+            final_response=recorder.session.final_response,
+            active_skills=list(getattr(recorder.session, "active_skills", None) or []),
+            tags=list(getattr(recorder.session, "tags", None) or []),
+            provider_config=dict(getattr(recorder.session, "provider_config", None) or {}),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail closed
+        logger.error("hermes-unroll: redaction failed, refusing to write trace: %s", exc)
+        return None
 
     # B2: cost ledger — summed usage x model pricing (fail-open).
     cost_usd = 0.0
@@ -195,21 +210,22 @@ def _generate_trace(session_id: str, completed: bool = True):
 
     traces_dir = _resolve_traces_dir()
     try:
+        from generator import generate_trace_program
+
         traces_dir.mkdir(parents=True, exist_ok=True)
         program_path = generate_trace_program(
             events,
             session_id=session_id or ctx.session_id,
             model=ctx.model,
             provider=ctx.provider,
-            system_prompt=recorder.session.system_prompt,
-            user_message=recorder.session.initial_user_message,
-            final_response=recorder.session.final_response,
+            system_prompt=redacted_meta["system_prompt"],
+            user_message=redacted_meta["user_message"],
+            final_response=redacted_meta["final_response"],
             started_at=recorder.session.started_at,
             cost_usd=cost_usd,
-            active_skills=list(
-                getattr(recorder.session, "active_skills", None) or []
-            ),
-            tags=list(getattr(recorder.session, "tags", None) or []),
+            active_skills=redacted_meta["active_skills"],
+            tags=redacted_meta["tags"],
+            provider_config=redacted_meta["provider_config"],
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
         # Guarded Pulse auto-score (G5 init-part): opt-in via
@@ -263,6 +279,8 @@ def _generate_trace(session_id: str, completed: bool = True):
                 logger.warning("hermes-unroll: pulse auto-score failed: %s", exc)
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
+        return None
+    return program_path
 
 
 def _session_tags_from_env() -> list[str]:
@@ -303,8 +321,16 @@ def _on_session_end(
     platform: str,
     **kwargs,
 ):
-    """Hook: fires at end of every run_conversation call + CLI exit."""
-    _generate_trace(session_id, completed=completed and not interrupted)
+    """Hook: fires at end of every run_conversation call + CLI exit.
+
+    Per-turn by host design (not per-session): update completion state but
+    do NOT write here — one atomic write happens at finalize. Heavy work
+    here would be O(turns) full-file rewrites.
+    """
+    ctx = _get_session(session_id)
+    if ctx is None:
+        return
+    ctx.recorder.session.completed = completed and not interrupted
 
 
 def _on_session_finalize(
@@ -312,7 +338,10 @@ def _on_session_finalize(
     platform: str,
     **kwargs,
 ):
-    """Hook: fires when CLI/gateway tears down an active session."""
+    """Hook: fires when CLI/gateway tears down an active session.
+
+    The single write point: exactly-once generation happens here.
+    """
     ctx = _get_session(session_id)
     if ctx is not None and ctx.recorder.session.events:
         _generate_trace(session_id or ctx.session_id)

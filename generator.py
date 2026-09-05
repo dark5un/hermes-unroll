@@ -35,11 +35,29 @@ def generate_trace_program(
     cost_usd: float = 0.0,
     active_skills: list | None = None,
     tags: list | None = None,
+    provider_config: dict | None = None,
 ) -> str:
-    """Compile events into a Hermes-independent replay program."""
+    """Compile events into a Hermes-independent replay program.
+
+    Writes atomically (temp file + fsync + 0600 + os.replace) so a crash
+    mid-generation never leaves a truncated artifact, and refuses to
+    silently overwrite: a content-hash suffix disambiguates sessions that
+    normalize to the same filename.
+    """
+    import hashlib
+    import tempfile
+
     traces_dir = _get_traces_dir()
     traces_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{safe_filename(session_id or 'unsaved')}.py"
+    try:
+        traces_dir.chmod(0o700)
+    except OSError:
+        pass
+    stem = safe_filename(session_id or "unsaved")
+    digest = hashlib.sha256(
+        f"{session_id}\x00{started_at}\x00{len(events)}".encode()
+    ).hexdigest()[:8]
+    filename = f"{stem}_{digest}.py"
     filepath = traces_dir / filename
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -61,9 +79,23 @@ def generate_trace_program(
         cost_usd=cost_usd,
         active_skills=skills,
         session_tags=list(tags or []),
+        provider_config=provider_config,
     )
 
-    filepath.write_text(code, encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(dir=str(traces_dir), suffix=".tmp")
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(code)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, filepath)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     return str(filepath.resolve())
 
 
@@ -382,12 +414,20 @@ def _build_tool_schemas(events: list) -> list[dict]:
     ]
 
 
-def _build_provider_config(model: str, provider: str) -> dict:
-    """Build the PROVIDER_CONFIG constant (no secrets baked in)."""
+def _build_provider_config(
+    model: str, provider: str, captured: dict | None = None
+) -> dict:
+    """Build the PROVIDER_CONFIG constant (no secrets baked in).
+
+    A captured config (base_url, api_mode from the live session) wins over
+    guesswork; only the safe routing fields are emitted, never keys.
+    """
+    captured = captured or {}
     return {
         "model": model,
         "provider": provider,
-        "base_url": "",
+        "base_url": captured.get("base_url", ""),
+        "api_mode": captured.get("api_mode", ""),
         "engine": "openai",
     }
 
@@ -725,6 +765,7 @@ def _build_program_text(
     cost_usd: float = 0.0,
     active_skills: list | None = None,
     session_tags: list | None = None,
+    provider_config: dict | None = None,
 ) -> str:
     nl = count_llm_calls(events)
     tc = count_tool_calls(events)
@@ -749,7 +790,7 @@ def _build_program_text(
     jcache = json.dumps(cache, indent=2)
     schemas = _build_tool_schemas(events)
     jschemas = json.dumps(schemas, indent=2)
-    provcfg = _build_provider_config(model, provider)
+    provcfg = _build_provider_config(model, provider, provider_config)
     jprov = json.dumps(provcfg, indent=2)
     jactive = json.dumps(
         _build_active_skills(events, active_skills), ensure_ascii=False

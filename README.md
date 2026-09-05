@@ -37,7 +37,7 @@ Twelve hooks, one accumulator, one code generator.
 | `register(ctx)` | `__init__.py` | Wires 12 hooks to the tracer (session lifecycle + API depth + subagents + stream) |
 | `TraceRecorder` | `tracer.py` | Accumulates `TraceEvent` objects during a session |
 | `generate_trace_program()` | `generator.py` | Walks events, reconstructs messages, emits valid Python |
-| `redact_event` | `redact.py` | Strips API keys, tokens, emails before writing to disk |
+| `redact_event` / `redact_session_metadata` | `redact.py` | Strips API keys, tokens, emails from events AND session metadata (system prompt, skill/tag lists, provider config) — fail-closed: any redaction failure aborts the write |
 | `estimate_cost` | `pricing.py` | Per-model USD cost ledger |
 | `is_destructive` | `safety.py` | Destructive-tool detection for the dry-run guard |
 | `render_html_diff` | `diff.py` | Self-contained HTML trace diff |
@@ -179,7 +179,9 @@ Dry-run (no flags) needs nothing: it replays from `RESPONSE_CACHE`.
 
 | Feature | Module | Notes |
 |---------|--------|-------|
-| PII / secrets redaction | `redact.py` | `sk-*`, `ghp_*`/`gho_*`, Bearer, emails, hex secrets; `unroll.redact.custom_patterns` |
+| PII / secrets redaction | `redact.py` | `sk-*`, `ghp_*`/`gho_*`, Bearer, emails, hex secrets, structured secret keys; covers events + session metadata; fail-closed; `unroll.redact.custom_patterns` |
+| Trace file confidentiality | `generator.py` | Atomic write (temp + fsync + `os.replace`), mode `0600`, traces dir `0700`; content-hash filename suffix — colliding session ids never overwrite |
+| Lifecycle | `__init__.py` | `on_session_end` fires per turn (state update only, no write); `on_session_finalize` is the single exactly-once write point; `TraceRecorder.finalize()` seals the recorder |
 | Cost ledger | `pricing.py` | `COST = {model, cost_usd, input_tokens, output_tokens}` + `# Cost: $…` header; `pricing_overrides` |
 | Dry-run guard | `safety.py` | Destructive tools skip unless `--allow-destructive` |
 | HTML diff | `diff.py` | `render_html_diff()` — self-contained report, no deps |
