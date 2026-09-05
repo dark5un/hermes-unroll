@@ -8,6 +8,7 @@ Phase 2: +7 hooks (pre_api_request, post_api_request, api_request_error,
                    pre_tool_call)
 """
 
+import json
 import logging
 import os
 import sys
@@ -139,6 +140,55 @@ def _generate_trace(session_id: str, completed: bool = True):
             started_at=_recorder.session.started_at,
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
+        # Guarded Pulse auto-score (G5 init-part): opt-in via
+        # unroll.pulse_auto_score (default false). Never breaks traces.
+        pulse_enabled = False
+        try:
+            env_raw = os.environ.get("UNROLL_PULSE_AUTO_SCORE")
+            if env_raw is not None:
+                pulse_enabled = env_raw.strip().lower() in (
+                    "1", "true", "yes", "on",
+                )
+            else:
+                get_config = globals().get("get_config")
+                if callable(get_config):
+                    try:
+                        pulse_enabled = bool(
+                            get_config("unroll.pulse_auto_score", False)
+                        )
+                    except TypeError:
+                        try:
+                            pulse_enabled = bool(
+                                get_config("unroll.pulse_auto_score")
+                            )
+                        except Exception:  # noqa: BLE001
+                            pulse_enabled = False
+                    except Exception:  # noqa: BLE001
+                        pulse_enabled = False
+        except Exception:  # noqa: BLE001
+            pulse_enabled = False
+        if pulse_enabled:
+            try:
+                import importlib
+
+                pulse_mod = importlib.import_module("pulse")
+                score_fn = pulse_mod.score_session
+                score = score_fn(events)
+                if isinstance(score, dict):
+                    payload = dict(score)
+                else:
+                    payload = {"pulse_score": score}
+                sidecar_path = Path(str(program_path) + ".pulse.json")
+                sidecar_path.write_text(
+                    json.dumps(payload, indent=2), encoding="utf-8"
+                )
+                logger.info(
+                    "hermes-unroll: pulse sidecar written to %s", sidecar_path
+                )
+            except ImportError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hermes-unroll: pulse auto-score failed: %s", exc)
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
 
