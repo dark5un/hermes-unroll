@@ -101,7 +101,12 @@ def _on_post_tool_call(
 
 
 def _generate_trace(session_id: str, completed: bool = True):
-    """Generate the trace file from current events, then clear for next turn."""
+    """Generate the trace file from ALL accumulated events so far.
+
+    Events accumulate across the whole session — each query extends the
+    trace rather than overwriting it.  Called on every query end (per-turn
+    ``on_session_end``) and on final teardown (``on_session_finalize``).
+    """
     global _session_id
     if _recorder is None:
         return
@@ -135,8 +140,7 @@ def _generate_trace(session_id: str, completed: bool = True):
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
 
-    # Reset events for the next turn, but keep recorder alive
-    _recorder.session.events = []
+    # Keep recorder and events alive — next query extends the same trace
     _session_id = session_id or _session_id
 
 
