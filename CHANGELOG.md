@@ -4,6 +4,17 @@ All notable changes to hermes-unroll are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-09-05
+
+### Added
+
+- `ACTIVE_SKILLS` capture: `skill_view` tool calls mark skills active
+  (ordered-unique session list, `skill_view` events); emitted as an
+  `ACTIVE_SKILLS` constant in every trace.
+- `--html` report writer: `--diff OTHER.py --html report.html` writes a
+  self-contained HTML diff (`_render_diff_html` inline in the trace file,
+  no dependencies) alongside the terminal comparison.
+
 ## [0.3.0] - 2026-09-05
 
 First usable release: generated traces are truly executable,

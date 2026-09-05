@@ -1,6 +1,6 @@
 [project]
 name = "hermes-unroll"
-version = "0.3.0"
+version = "0.4.0"
 description = "Unroll the agent loop into a reproducible Python program"
 authors = [{name = "Panagiotis Xynos - hi@onlyascii.io"}]
 requires-python = ">=3.12"
