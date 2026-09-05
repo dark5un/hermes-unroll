@@ -140,38 +140,42 @@ def _build_reasoning_blocks(events: list) -> list[dict]:
 
 
 def _build_replay_steps(events: list) -> str:
-    """Build step-by-step execution code for all 12 event kinds."""
+    """Build step-by-step execution code for all 12 event kinds with range guard."""
     steps = ""
     step_num = 0
     for event in events:
+        guard = f"    if _from <= {step_num} <= _to:\n"
         if event.kind == "system_prompt":
-            steps += f"    # Step {step_num}: System prompt (already set)\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"system_prompt\"}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: System prompt (already set)\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"system_prompt\"}})\n\n"
             step_num += 1
         elif event.kind == "user_message":
             txt = event.data.get("text", "")
             jtxt = json.dumps(txt, ensure_ascii=False)
-            steps += f"    # Step {step_num}: User message\n"
-            steps += f"    messages.append({{\"role\": \"user\", \"content\": {jtxt}}})\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"user_message\", \"text\": {jtxt}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: User message\n"
+            steps += f"        messages.append({{\"role\": \"user\", \"content\": {jtxt}}})\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"user_message\", \"text\": {jtxt}}})\n\n"
             step_num += 1
         elif event.kind == "llm_call":
             txt = event.data.get("response_text", "")
             tcs = event.data.get("response_tool_calls", [])
-            steps += f"    # Step {step_num}: LLM call\n"
+            steps += guard
+            steps += f"        # Step {step_num}: LLM call\n"
             if tcs:
                 names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs)
                 jtcs = json.dumps(tcs, indent=2, ensure_ascii=False)
                 jnames = json.dumps(names, ensure_ascii=False)
-                steps += f"    # Model requested tool calls: {names}\n"
-                steps += f"    msg = {{\"role\": \"assistant\", \"tool_calls\": {jtcs}}}\n"
-                steps += "    messages.append(msg)\n"
-                steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"tool_calls\": {jnames}}})\n"
+                steps += f"        # Model requested tool calls: {names}\n"
+                steps += f"        msg = {{\"role\": \"assistant\", \"tool_calls\": {jtcs}}}\n"
+                steps += "        messages.append(msg)\n"
+                steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"tool_calls\": {jnames}}})\n"
             else:
                 jtxt = json.dumps(txt, ensure_ascii=False)
-                steps += f"    msg = {{\"role\": \"assistant\", \"content\": {jtxt}}}\n"
-                steps += "    messages.append(msg)\n"
-                steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"text\": {jtxt}}})\n"
+                steps += f"        msg = {{\"role\": \"assistant\", \"content\": {jtxt}}}\n"
+                steps += "        messages.append(msg)\n"
+                steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"text\": {jtxt}}})\n"
             steps += "\n"
             step_num += 1
         elif event.kind == "tool_call":
@@ -184,24 +188,26 @@ def _build_replay_steps(events: list) -> str:
             jname = json.dumps(name, ensure_ascii=False)
             dur_val = dur if dur else "null"
             dur_comment = f"  # {dur}ms" if dur else ""
-            steps += f"    # Step {step_num}: Tool call: {name}{dur_comment}\n"
-            steps += f"    messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Tool call: {name}{dur_comment}\n"
+            steps += f"        messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n\n"
             step_num += 1
         elif event.kind == "final_response":
             txt = event.data.get("text", "")
             jtxt = json.dumps(txt, ensure_ascii=False)
-            steps += f"    # Step {step_num}: Final response\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"final_response\", \"text\": {jtxt}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Final response\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"final_response\", \"text\": {jtxt}}})\n\n"
             step_num += 1
-        # Phase 2: enhanced event types
         elif event.kind == "pre_api_request":
             apic = event.data.get("api_call_count", 0)
             approx = event.data.get("approx_input_tokens", 0) or 0
             rcnt = event.data.get("retry_count", 0) or 0
-            steps += f"    # Step {step_num}: API Request (call #{apic}, retry #{rcnt})\n"
-            steps += f"    #   Approx tokens: {approx}\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"pre_api_request\", \"api_call_count\": {apic}, \"approx_input_tokens\": {approx}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: API Request (call #{apic}, retry #{rcnt})\n"
+            steps += f"        #   Approx tokens: {approx}\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"pre_api_request\", \"api_call_count\": {apic}, \"approx_input_tokens\": {approx}}})\n\n"
             step_num += 1
         elif event.kind == "post_api_request":
             fr = event.data.get("finish_reason", "")
@@ -212,59 +218,65 @@ def _build_replay_steps(events: list) -> str:
             durs = f" ({dur_ms}ms)" if dur_ms else ""
             u_in = usage.get("input_tokens", "?")
             u_out = usage.get("output_tokens", "?")
-            steps += f"    # Step {step_num}: API Response{durs}\n"
-            steps += f"    #   Finish reason: {fr}\n"
-            steps += f"    #   Usage: {u_in} in / {u_out} out\n"
+            steps += guard
+            steps += f"        # Step {step_num}: API Response{durs}\n"
+            steps += f"        #   Finish reason: {fr}\n"
+            steps += f"        #   Usage: {u_in} in / {u_out} out\n"
             if thinking:
                 jthinking = json.dumps(thinking[:200], ensure_ascii=False)
-                steps += f"    #   Thinking: {jthinking}\n"
+                steps += f"        #   Thinking: {jthinking}\n"
             if reasoning:
                 jreasoning = json.dumps(reasoning[:200], ensure_ascii=False)
-                steps += f"    #   Reasoning: {jreasoning}\n"
+                steps += f"        #   Reasoning: {jreasoning}\n"
             jfr = json.dumps(fr, ensure_ascii=False)
             ht = str(bool(thinking) or False)
-            dur_str = dur_ms if dur_ms else "null"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"post_api_request\", \"finish_reason\": {jfr}, \"api_duration_ms\": {dur_str}, \"has_thinking\": {ht}}})\n\n"
+            ds = dur_ms if dur_ms else "null"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"post_api_request\", \"finish_reason\": {jfr}, \"api_duration_ms\": {ds}, \"has_thinking\": {ht}}})\n\n"
             step_num += 1
         elif event.kind == "api_request_error":
             status = event.data.get("status_code")
             reason = event.data.get("reason", "")
-            steps += f"    # Step {step_num}: API Error (status={status}, reason={reason})\n"
+            steps += guard
+            steps += f"        # Step {step_num}: API Error (status={status}, reason={reason})\n"
             jreason = json.dumps(reason or "", ensure_ascii=False)
-            stat_str = status if status is not None else "null"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"api_request_error\", \"status_code\": {stat_str}, \"reason\": {jreason}}})\n\n"
+            ss = status if status is not None else "null"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"api_request_error\", \"status_code\": {ss}, \"reason\": {jreason}}})\n\n"
             step_num += 1
         elif event.kind == "subagent_start":
             goal = event.data.get("child_goal", "")
             role = event.data.get("child_role", "")
             jgoal = json.dumps(goal, ensure_ascii=False)
             jrole = json.dumps(role, ensure_ascii=False)
-            steps += f"    # Step {step_num}: Subagent Start - {role}\n"
-            steps += f"    #   Goal: {jgoal}\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_start\", \"role\": {jrole}, \"goal\": {jgoal}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Subagent Start - {role}\n"
+            steps += f"        #   Goal: {jgoal}\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_start\", \"role\": {jrole}, \"goal\": {jgoal}}})\n\n"
             step_num += 1
         elif event.kind == "subagent_stop":
             summary = event.data.get("child_summary", "")
             role = event.data.get("child_role", "")
             jrole = json.dumps(role, ensure_ascii=False)
-            steps += f"    # Step {step_num}: Subagent Stop - {role}\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Subagent Stop - {role}\n"
             if summary:
                 jsummary = json.dumps(summary[:200], ensure_ascii=False)
-                steps += f"    #   Summary: {jsummary}\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_stop\", \"role\": {jrole}}})\n\n"
+                steps += f"        #   Summary: {jsummary}\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_stop\", \"role\": {jrole}}})\n\n"
             step_num += 1
         elif event.kind == "on_stream_delta":
             delta = event.data.get("delta", "")
             knd = event.data.get("kind", "")
             dlen = len(delta)
-            steps += f"    # Step {step_num}: Stream delta ({knd}) +{dlen} chars\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"stream_delta\", \"len\": {dlen}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Stream delta ({knd}) +{dlen} chars\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"stream_delta\", \"len\": {dlen}}})\n\n"
             step_num += 1
         elif event.kind == "pre_tool_call":
             tname = event.data.get("name", "")
             jtname = json.dumps(tname, ensure_ascii=False)
-            steps += f"    # Step {step_num}: Pre-tool call guard - {tname}\n"
-            steps += f"    step_log.append({{\"step\": {step_num}, \"kind\": \"pre_tool_call\", \"name\": {jtname}}})\n\n"
+            steps += guard
+            steps += f"        # Step {step_num}: Pre-tool call guard - {tname}\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"pre_tool_call\", \"name\": {jtname}}})\n\n"
             step_num += 1
     return steps
 
@@ -337,17 +349,27 @@ def _build_program_text(
 
 def _make_replay_function(replay_steps_body: str) -> str:
     """Build the replay() function source for the generated program."""
-    return f'''def replay():
+    return f'''def replay(from_step=None, to_step=None):
     """
     Walk through the conversation step by step.
     In dry-run mode (default), responses come from the cache.
     With --live, they come from real LLM calls.
+
+    Args:
+        from_step: First step index to execute (inclusive, None = start)
+        to_step: Last step index to execute (inclusive, None = end)
     """
     messages: list[dict] = []
     step_log: list[dict] = []
+    step_num = 0
+    _from = from_step if from_step is not None else 0
+    _to = to_step if to_step is not None else 999999
 
     print(f"Replaying session {{SESSION_ID}}")
     print(f"Model: {{MODEL}}  Provider: {{PROVIDER}}")
+    if from_step is not None or to_step is not None:
+        _range_desc = f"steps {{_from}}-{{_to}}"
+        print(f"Range: {{_range_desc}}")
     print(f"Original: {{len(TIMELINE)}} events, {{len(RESPONSE_CACHE)}} cached steps")
     print(f"Usage: {{USAGE.get('total_api_calls', '?')}} API calls, "
           f"{{_human_duration(USAGE.get('total_input_tokens', 0) // 10)}} input tokens")
@@ -385,6 +407,8 @@ def _make_replay_function(replay_steps_body: str) -> str:
         "provider": PROVIDER,
         "original_duration_ms": ORIGINAL_DURATION_MS,
         "messages_count": len(messages),
+        "from_step": _from,
+        "to_step": _to,
         "steps": step_log,
         "messages": messages,
         "usage": USAGE,
@@ -401,6 +425,10 @@ def _make_parse_args_function() -> str:
         description="hermes-unroll replayer - reproduces and analyses agent traces"
     )
     parser.add_argument("--live", action="store_true", help="Execute real LLM calls")
+    parser.add_argument("--from", dest="from_step", type=int, default=None,
+                        help="Start from step N (inclusive)")
+    parser.add_argument("--to", dest="to_step", type=int, default=None,
+                        help="Stop at step N (inclusive)")
     parser.add_argument("--stop-at", type=int, default=None, help="Stop after N steps")
     parser.add_argument("--substitute-tool", type=str, default=None,
                         help="Replace tool call args: '<step> <json_args>'")
