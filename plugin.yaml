@@ -5,6 +5,7 @@ author: "Hermes User"
 kind: standalone
 provides_tools: []
 provides_hooks:
+  - on_session_start
   - post_llm_call
   - post_tool_call
   - on_session_end

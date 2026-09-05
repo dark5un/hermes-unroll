@@ -15,6 +15,7 @@ _recorder = None
 _session_id = ""
 _model = ""
 _provider = ""
+_first_turn = False
 
 
 def _resolve_traces_dir() -> Path:
@@ -34,14 +35,12 @@ def _on_post_llm_call(
     **kwargs,
 ):
     """Hook: fires after each successful LLM call turn."""
-    global _session_id, _model, _provider
+    global _first_turn
     if _recorder is None:
         return
 
-    if not _session_id:
-        _session_id = session_id
-        _model = model
-        _provider = platform
+    if _first_turn:
+        _first_turn = False
         _recorder.set_metadata(
             session_id=session_id,
             model=model,
@@ -133,6 +132,27 @@ def _generate_trace(session_id: str, completed: bool = True):
 
     _recorder = None
     _session_id = ""
+    _first_turn = False
+
+
+def _on_session_start(
+    session_id: str,
+    model: str,
+    platform: str,
+    **kwargs,
+):
+    """Hook: fires when a new session is created.
+
+    Creates a fresh recorder so every session produces its own trace.
+    """
+    global _recorder, _session_id, _model, _provider, _first_turn
+    from tracer import TraceRecorder
+
+    _recorder = TraceRecorder()
+    _session_id = session_id
+    _model = model
+    _provider = platform
+    _first_turn = True
 
 
 def _on_session_end(
@@ -159,17 +179,12 @@ def _on_session_finalize(
 
 def register(ctx):
     """Called by Hermes plugin loader on session start."""
-    global _recorder
-
     # Ensure the plugin directory is on sys.path so sibling modules import
     _plugin_dir = str(Path(__file__).resolve().parent)
     if _plugin_dir not in sys.path:
         sys.path.insert(0, _plugin_dir)
 
-    from tracer import TraceRecorder
-
-    _recorder = TraceRecorder()
-
+    ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
