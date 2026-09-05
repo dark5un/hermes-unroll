@@ -3,7 +3,7 @@
 import ast
 from pathlib import Path
 
-from hermes_unroll.generator import (
+from generator import (
     count_llm_calls,
     count_tool_calls,
     format_messages,
@@ -11,7 +11,7 @@ from hermes_unroll.generator import (
     reconstruct_messages,
     safe_filename,
 )
-from hermes_unroll.tracer import TraceEvent
+from tracer import TraceEvent
 
 
 class TestSafeFilename:

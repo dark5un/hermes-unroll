@@ -2,7 +2,7 @@
 
 import time
 
-from hermes_unroll.tracer import TraceEvent, TraceRecorder, TraceSession
+from tracer import TraceEvent, TraceRecorder, TraceSession
 
 
 class TestTraceEvent:

@@ -2,7 +2,7 @@
 name = "hermes-unroll"
 version = "0.1.0"
 description = "Unroll the agent loop into a reproducible Python program"
-authors = [{name = "Hermes User"}]
+authors = [{name = "Panagiotis Xynos - hi@onlyascii.io"}]
 requires-python = ">=3.12"
 dependencies = []
 

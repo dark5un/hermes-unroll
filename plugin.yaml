@@ -8,3 +8,4 @@ provides_hooks:
   - post_llm_call
   - post_tool_call
   - on_session_end
+  - on_session_finalize
