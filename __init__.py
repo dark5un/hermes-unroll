@@ -172,6 +172,7 @@ def _generate_trace(session_id: str, completed: bool = True):
             active_skills=list(
                 getattr(_recorder.session, "active_skills", None) or []
             ),
+            tags=list(getattr(_recorder.session, "tags", None) or []),
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
         # Guarded Pulse auto-score (G5 init-part): opt-in via
@@ -229,6 +230,14 @@ def _generate_trace(session_id: str, completed: bool = True):
     _session_id = session_id or _session_id
 
 
+def _session_tags_from_env() -> list[str]:
+    """Read session tags from env. UNROLL_ prefix wins, HERMES_ is legacy fallback."""
+    raw = os.environ.get("UNROLL_SESSION_TAGS", "") or os.environ.get(
+        "HERMES_SESSION_TAGS", ""
+    )
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
 def _on_session_start(
     session_id: str,
     model: str,
@@ -240,6 +249,7 @@ def _on_session_start(
     from tracer import TraceRecorder
 
     _recorder = TraceRecorder()
+    _recorder.session.tags = _session_tags_from_env()
     _session_id = session_id
     _model = model
     _provider = platform

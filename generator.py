@@ -34,6 +34,7 @@ def generate_trace_program(
     started_at: float = 0,
     cost_usd: float = 0.0,
     active_skills: list | None = None,
+    tags: list | None = None,
 ) -> str:
     """Compile events into a Hermes-independent replay program."""
     traces_dir = _get_traces_dir()
@@ -59,6 +60,7 @@ def generate_trace_program(
         started_at=started_at,
         cost_usd=cost_usd,
         active_skills=skills,
+        session_tags=list(tags or []),
     )
 
     filepath.write_text(code, encoding="utf-8")
@@ -722,6 +724,7 @@ def _build_program_text(
     started_at: float = 0,
     cost_usd: float = 0.0,
     active_skills: list | None = None,
+    session_tags: list | None = None,
 ) -> str:
     nl = count_llm_calls(events)
     tc = count_tool_calls(events)
@@ -751,6 +754,7 @@ def _build_program_text(
     jactive = json.dumps(
         _build_active_skills(events, active_skills), ensure_ascii=False
     )
+    jtags = json.dumps(list(session_tags or []), ensure_ascii=False)
     graph = _build_state_graph(events, started_at)
     jgraph = json.dumps(graph, indent=2, ensure_ascii=False)
     depmap = _build_dependency_map(events)
@@ -809,6 +813,7 @@ def _build_program_text(
         TOOL_SCHEMAS_JSON=jschemas,
         PROVIDER_JSON=jprov,
         ACTIVE_SKILLS_JSON=jactive,
+        SESSION_TAGS_JSON=jtags,
         LIVE_HELPER=live_helper,
         DIFF_HTML_HELPER=diff_html_helper,
     )

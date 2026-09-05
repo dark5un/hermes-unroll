@@ -462,3 +462,39 @@ class TestGeneratedSourceConstants:
         code = Path(path).read_text(encoding="utf-8")
         assert "deep thought" in code
         assert "REASONING_BLOCKS = " in code
+
+
+class TestSessionTags:
+    """SESSION_TAGS constant in generated traces (C2-a, task T3)."""
+
+    def test_tags_emit_constant(self, tmp_path, monkeypatch):
+        import ast
+
+        import generator
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path = generator.generate_trace_program([], session_id="t", tags=["team-a"])
+        tree = ast.parse(Path(path).read_text())
+        found = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "SESSION_TAGS":
+                        found["tags"] = ast.literal_eval(node.value)
+        assert found["tags"] == ["team-a"]
+
+    def test_tags_default_empty(self, tmp_path, monkeypatch):
+        import ast
+
+        import generator
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        path = generator.generate_trace_program([], session_id="t2")
+        tree = ast.parse(Path(path).read_text())
+        vals = [
+            ast.literal_eval(n.value)
+            for n in tree.body
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "SESSION_TAGS" for t in n.targets)
+        ]
+        assert vals == [[]]

@@ -60,6 +60,7 @@ DEPENDENCIES = $JDEPS
 TOOL_SCHEMAS = $TOOL_SCHEMAS_JSON
 PROVIDER_CONFIG = $PROVIDER_JSON
 ACTIVE_SKILLS = $ACTIVE_SKILLS_JSON
+SESSION_TAGS = $SESSION_TAGS_JSON
 LIVE = False
 ENGINE = "openai"
 SUBSTITUTE_TOOL = None
@@ -219,7 +220,7 @@ if __name__ == "__main__":
             except SyntaxError as _se:
                 print(f"Error loading other trace: cannot parse file: {_se}")
                 sys.exit(1)
-            _wanted = ("TIMELINE", "USAGE", "STATE_GRAPH", "COST", "MODEL", "SESSION_ID")
+            _wanted = ("TIMELINE", "USAGE", "STATE_GRAPH", "COST", "MODEL", "SESSION_ID", "SESSION_TAGS")
             _other = {}
             for _node in _diff_tree.body:
                 if isinstance(_node, _ast.Assign):
