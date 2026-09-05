@@ -1,6 +1,11 @@
 """Hermes plugin entry point for hermes-unroll.
 
 Subscribes to hooks and wires the tracer to the code generator.
+Phase 1: 5 hooks (on_session_start, post_llm_call, post_tool_call,
+                   on_session_end, on_session_finalize)
+Phase 2: +7 hooks (pre_api_request, post_api_request, api_request_error,
+                   subagent_start, subagent_stop, on_stream_delta,
+                   pre_tool_call)
 """
 
 import logging
@@ -19,11 +24,15 @@ _first_turn = False
 
 
 def _resolve_traces_dir() -> Path:
-    """Resolve output dir respecting $HERMES_HOME."""
     hermes_home = os.environ.get("HERMES_HOME")
     if hermes_home:
         return Path(hermes_home) / "traces" / "unrolled"
     return Path.home() / ".hermes" / "traces" / "unrolled"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 hooks
+# ---------------------------------------------------------------------------
 
 
 def _on_post_llm_call(
@@ -39,7 +48,6 @@ def _on_post_llm_call(
     if _recorder is None:
         return
 
-    # First turn — capture system prompt, user message, and metadata
     if _first_turn:
         _first_turn = False
         _recorder.set_metadata(
@@ -58,13 +66,11 @@ def _on_post_llm_call(
             if _recorder.session.system_prompt and _recorder.session.initial_user_message:
                 break
 
-    # Every turn — record the current user message
     for msg in reversed(conversation_history):
         if msg.get("role") == "user":
             _recorder.record("user_message", {"text": msg.get("content", "")})
             break
 
-    # Record tool calls from the assistant response
     tool_calls = []
     for msg in reversed(conversation_history):
         if msg.get("role") == "assistant":
@@ -101,12 +107,7 @@ def _on_post_tool_call(
 
 
 def _generate_trace(session_id: str, completed: bool = True):
-    """Generate the trace file from ALL accumulated events so far.
-
-    Events accumulate across the whole session — each query extends the
-    trace rather than overwriting it.  Called on every query end (per-turn
-    ``on_session_end``) and on final teardown (``on_session_finalize``).
-    """
+    """Generate the trace file from ALL accumulated events so far."""
     global _session_id
     if _recorder is None:
         return
@@ -141,7 +142,6 @@ def _generate_trace(session_id: str, completed: bool = True):
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
 
-    # Keep recorder and events alive — next query extends the same trace
     _session_id = session_id or _session_id
 
 
@@ -151,10 +151,7 @@ def _on_session_start(
     platform: str,
     **kwargs,
 ):
-    """Hook: fires when a new session is created.
-
-    Creates a fresh recorder so every session produces its own trace.
-    """
+    """Hook: fires when a new session is created."""
     global _recorder, _session_id, _model, _provider, _first_turn
     from tracer import TraceRecorder
 
@@ -187,17 +184,233 @@ def _on_session_finalize(
         _generate_trace(session_id or _session_id)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 hooks — Enhanced Trace Depth
+# ---------------------------------------------------------------------------
+
+
+def _on_pre_api_request(
+    session_id: str,
+    model: str,
+    provider: str,
+    request_messages: list,
+    conversation_history: list,
+    user_message: str,
+    api_call_count: int,
+    retry_count: int,
+    approx_input_tokens: int | None,
+    message_count: int,
+    tool_count: int,
+    **kwargs,
+):
+    """Hook: fires before each API request to the LLM.
+
+    Captures the request payload as sent to the provider.
+    """
+    if _recorder is None:
+        return
+
+    _recorder.record("pre_api_request", {
+        "model": model,
+        "provider": provider,
+        "request_messages": request_messages,
+        "user_message": user_message,
+        "api_call_count": api_call_count,
+        "retry_count": retry_count,
+        "approx_input_tokens": approx_input_tokens,
+        "message_count": message_count,
+        "tool_count": tool_count,
+    })
+
+
+def _on_post_api_request(
+    session_id: str,
+    model: str,
+    provider: str,
+    api_duration: float,
+    finish_reason: str | None,
+    usage: dict | None,
+    response: dict | None,
+    assistant_message: object | None,
+    assistant_content_chars: int,
+    assistant_tool_call_count: int,
+    api_call_count: int,
+    **kwargs,
+):
+    """Hook: fires after each API request completes.
+
+    Captures raw response, usage metrics, finish reason, and duration.
+    Extracts thinking/reasoning blocks from the assistant message.
+    """
+    if _recorder is None:
+        return
+
+    # Extract reasoning/thinking content from the assistant message
+    thinking_content = None
+    reasoning_content = None
+    if assistant_message is not None:
+        thinking_content = getattr(assistant_message, "thinking", None) or ""
+        reasoning_content = getattr(
+            assistant_message, "reasoning_content", None
+        ) or ""
+
+    _recorder.record("post_api_request", {
+        "model": model,
+        "provider": provider,
+        "api_duration_ms": int(api_duration * 1000) if api_duration else None,
+        "finish_reason": finish_reason,
+        "usage": usage or {},
+        "assistant_content_chars": assistant_content_chars,
+        "assistant_tool_call_count": assistant_tool_call_count,
+        "api_call_count": api_call_count,
+        "thinking_content": thinking_content,
+        "reasoning_content": reasoning_content,
+    })
+
+    # Update session-level token accounting
+    if usage:
+        _recorder.session.total_api_calls += 1
+        _recorder.session.total_tokens_in += usage.get("input_tokens", 0) or 0
+        _recorder.session.total_tokens_out += usage.get("output_tokens", 0) or 0
+
+
+def _on_api_request_error(
+    session_id: str,
+    model: str,
+    provider: str,
+    api_call_count: int,
+    api_duration: float,
+    status_code: int | None,
+    retry_count: int | None,
+    max_retries: int | None,
+    retryable: bool | None,
+    reason: str | None,
+    error: dict | None,
+    **kwargs,
+):
+    """Hook: fires when an API request fails."""
+    if _recorder is None:
+        return
+
+    _recorder.record("api_request_error", {
+        "model": model,
+        "provider": provider,
+        "api_call_count": api_call_count,
+        "api_duration_ms": int(api_duration * 1000) if api_duration else None,
+        "status_code": status_code,
+        "retry_count": retry_count,
+        "max_retries": max_retries,
+        "retryable": retryable,
+        "reason": reason,
+        "error": error,
+    })
+
+
+def _on_stream_delta(
+    session_id: str,
+    delta: str,
+    kind: str,
+    **kwargs,
+):
+    """Hook: fires for each streamed text delta.
+
+    Captures the raw streaming output for exact token reconstruction.
+    """
+    if _recorder is None:
+        return
+
+    _recorder.record("on_stream_delta", {
+        "delta": delta,
+        "kind": kind,
+    })
+
+
+def _on_subagent_start(
+    parent_session_id: str | None,
+    child_session_id: str | None,
+    child_subagent_id: str | None,
+    child_role: str | None,
+    child_goal: str | None,
+    **kwargs,
+):
+    """Hook: fires when a subagent is spawned."""
+    if _recorder is None:
+        return
+
+    _recorder.record("subagent_start", {
+        "parent_session_id": parent_session_id,
+        "child_session_id": child_session_id,
+        "child_subagent_id": child_subagent_id,
+        "child_role": child_role,
+        "child_goal": child_goal,
+    })
+
+
+def _on_subagent_stop(
+    parent_session_id: str | None,
+    child_session_id: str | None,
+    child_role: str | None,
+    child_summary: str | None,
+    **kwargs,
+):
+    """Hook: fires when a subagent completes."""
+    if _recorder is None:
+        return
+
+    _recorder.record("subagent_stop", {
+        "parent_session_id": parent_session_id,
+        "child_session_id": child_session_id,
+        "child_role": child_role,
+        "child_summary": child_summary,
+    })
+
+
+def _on_pre_tool_call(
+    tool_name: str,
+    args: dict,
+    task_id: str,
+    **kwargs,
+):
+    """Hook: fires before a tool executes.
+
+    Captures the tool name and arguments before execution for guardrail
+    interception records.
+    """
+    if _recorder is None:
+        return
+
+    _recorder.record("pre_tool_call", {
+        "name": tool_name,
+        "args": args,
+        "task_id": task_id,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
 def register(ctx):
     """Called by Hermes plugin loader on session start."""
-    # Ensure the plugin directory is on sys.path so sibling modules import
     _plugin_dir = str(Path(__file__).resolve().parent)
     if _plugin_dir not in sys.path:
         sys.path.insert(0, _plugin_dir)
 
+    # Phase 1: session lifecycle hooks
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_hook("on_session_finalize", _on_session_finalize)
 
-    logger.info("hermes-unroll: plugin registered")
+    # Phase 2: enhanced trace depth hooks
+    ctx.register_hook("pre_api_request", _on_pre_api_request)
+    ctx.register_hook("post_api_request", _on_post_api_request)
+    ctx.register_hook("api_request_error", _on_api_request_error)
+    ctx.register_hook("subagent_start", _on_subagent_start)
+    ctx.register_hook("subagent_stop", _on_subagent_stop)
+    ctx.register_hook("on_stream_delta", _on_stream_delta)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+
+    logger.info("hermes-unroll: plugin registered (12 hooks)")

@@ -1,12 +1,21 @@
 name: hermes-unroll
-version: 0.1.0
-description: "Unroll the agent loop into a reproducible Python program"
-author: "Hermes User"
+version: 0.2.0
+description: "Unroll the agent loop into a reproducible Python program — captures every session trace with full event depth, response cache, and replay"
+author: "Panagiotis Xynos - hi@onlyascii.io"
 kind: standalone
 provides_tools: []
 provides_hooks:
+  # Phase 1: session lifecycle
   - on_session_start
   - post_llm_call
   - post_tool_call
   - on_session_end
   - on_session_finalize
+  # Phase 2: enhanced trace depth
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - subagent_start
+  - subagent_stop
+  - on_stream_delta
+  - pre_tool_call
