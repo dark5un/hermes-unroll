@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --group dev
+      - run: uv run ruff check .
+      - run: uv run pyright
+      - run: uv run pytest tests/ -q
+      # Gate: fail when zero tests are collected (a silent suite once hid
+      # real regressions behind a green check).
+      - run: uv run pytest tests/ --collect-only -q | tail -1 | grep -qv "no tests"
+      - run: python -m compileall -q . || python3 -m compileall -q .

@@ -11,8 +11,9 @@ INIT_PATH = PLUGIN_ROOT / "__init__.py"
 
 def _load_plugin(name="unroll_plugin_cost"):
     spec = importlib.util.spec_from_file_location(name, INIT_PATH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
+    sys.modules[mod.__name__] = mod
     spec.loader.exec_module(mod)
     return mod
 

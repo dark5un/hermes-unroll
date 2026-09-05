@@ -17,8 +17,9 @@ INIT_PATH = PLUGIN_ROOT / "__init__.py"
 
 def _load_plugin():
     spec = importlib.util.spec_from_file_location("unroll_plugin_pulse", INIT_PATH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["unroll_plugin_pulse"] = mod
+    sys.modules[mod.__name__] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -40,7 +41,7 @@ def test_pulse_present_writes_sidecar(tmp_path, monkeypatch):
     mod = _load_plugin()
     _make_recorder_with_events(mod, tmp_path, monkeypatch)
     fake = types.ModuleType("pulse")
-    fake.score_session = lambda events: {"pulse_score": 0.87, "events_seen": len(events)}
+    fake.__dict__["score_session"] = lambda events: {"pulse_score": 0.87, "events_seen": len(events)}
     monkeypatch.setitem(sys.modules, "pulse", fake)
     mod._generate_trace("pulse-test-session")
     traces = list((tmp_path / "traces" / "unrolled").glob("*.py"))
@@ -81,7 +82,7 @@ def test_pulse_raising_trace_still_written(tmp_path, monkeypatch):
         raise RuntimeError("pulse exploded")
 
     fake = types.ModuleType("pulse")
-    fake.score_session = _boom
+    fake.__dict__["score_session"] = _boom
     monkeypatch.setitem(sys.modules, "pulse", fake)
     mod._generate_trace("pulse-test-session")  # must not raise
     traces = list((tmp_path / "traces" / "unrolled").glob("*.py"))

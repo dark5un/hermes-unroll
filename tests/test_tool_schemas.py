@@ -14,8 +14,9 @@ INIT_PATH = PLUGIN_ROOT / "__init__.py"
 
 def _load_plugin():
     spec = importlib.util.spec_from_file_location("unroll_plugin_toolschemas", INIT_PATH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["unroll_plugin_toolschemas"] = mod
+    sys.modules[mod.__name__] = mod
     spec.loader.exec_module(mod)
     return mod
 

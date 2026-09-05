@@ -12,8 +12,9 @@ def _load_plugin():
     # shadowing the plugin root's __init__.py (same bug the other
     # spec-loading test files work around).
     spec = importlib.util.spec_from_file_location("unroll_plugin_sessiontags", INIT_PATH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["unroll_plugin_sessiontags"] = mod
+    sys.modules[mod.__name__] = mod
     spec.loader.exec_module(mod)
     return mod
 
