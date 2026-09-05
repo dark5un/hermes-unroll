@@ -1,0 +1,18 @@
+[project]
+name = "hermes-unroll"
+version = "0.1.0"
+description = "Unroll the agent loop into a reproducible Python program"
+authors = [{name = "Hermes User"}]
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q --tb=short"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
+]
