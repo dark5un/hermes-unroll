@@ -169,23 +169,33 @@ def _build_timeline(events: list, started_at: float) -> list[dict]:
 
 
 def _build_response_cache(events: list) -> dict:
-    """Build a response cache dict for deterministic replay (Phase 3)."""
+    """Build a response cache dict for deterministic replay (Phase 3).
+
+    Keys are the stable ``event_id`` assigned at record time
+    (``f"tool:{event_id}"`` / ``f"llm:{event_id}"``), so every LLM/tool
+    cache lookup resolves to the intended event across all 13 event
+    kinds — never a positional index that diverges from step numbering.
+    """
     cache: dict[str, Any] = {}
-    step = 0
     for e in events:
-        if e.kind == "llm_call":
-            cache[f"llm_{step}"] = {
+        kind = e.kind if not isinstance(e, dict) else e.get("kind")
+        data = e.data if not isinstance(e, dict) else e.get("data", {})
+        eid = e.event_id if not isinstance(e, dict) else e.get("event_id", "")
+        if not eid:
+            continue
+        if kind == "llm_call":
+            cache[f"llm:{eid}"] = {
                 "type": "llm_call",
-                "response_text": e.data.get("response_text", ""),
-                "response_tool_calls": e.data.get("response_tool_calls", []),
+                "event_id": eid,
+                "response_text": data.get("response_text", ""),
+                "response_tool_calls": data.get("response_tool_calls", []),
             }
-            step += 1
-        elif e.kind == "tool_call":
-            cache[f"tool_{step}"] = {
+        elif kind == "tool_call":
+            cache[f"tool:{eid}"] = {
                 "type": "tool_call",
-                "result": e.data.get("content", ""),
+                "event_id": eid,
+                "result": data.get("content", ""),
             }
-            step += 1
     return cache
 
 
@@ -538,33 +548,37 @@ def _build_replay_steps(events: list) -> str:
         elif event.kind == "tool_call":
             name = event.data.get("name", "")
             content = event.data.get("content", "")
+            args = event.data.get("args", {}) or {}
             tid = event.data.get("tool_call_id", "")
             dur = event.data.get("duration_ms")
+            eid = getattr(event, "event_id", "") or ""
             jcontent = json.dumps(content, ensure_ascii=False)
+            jargs = json.dumps(args, ensure_ascii=False)
+            jeid = json.dumps(eid, ensure_ascii=False)
             jtid = json.dumps(tid, ensure_ascii=False)
             jname = json.dumps(name, ensure_ascii=False)
             dur_val = dur if dur else "None"
             dur_comment = f"  # {dur}ms" if dur else ""
             steps += guard
-            steps += f"        # Step {step_num}: Tool call: {name}{dur_comment}\n"
-            steps += f"        _tool_args_{step_num} = {{}}\n"
+            steps += f"        # Step {step_num}: Tool call: {name}{dur_comment} (event {eid})\n"
+            steps += f"        _tool_args_{step_num} = {jargs}\n"
             steps += f"        _tool_default_{step_num} = {jcontent}\n"
             steps += f"        _sub_args_{step_num} = _tool_args_{step_num}\n"
             steps += "        if SUBSTITUTE_TOOL:\n"
             steps += "            try:\n"
             steps += f"                _sub_step_{step_num}, _sub_json_{step_num} = SUBSTITUTE_TOOL.split(\" \", 1)\n"
-            steps += f"                if int(_sub_step_{step_num}) == {step_num}:\n"
+            steps += f"                if _sub_step_{step_num} == {jeid}:\n"
             steps += f"                    _sub_args_{step_num} = json.loads(_sub_json_{step_num})\n"
             steps += "            except Exception:\n"
             steps += "                pass\n"
             steps += f"        if {jname} in DESTRUCTIVE_TOOLS and not ALLOW_DESTRUCTIVE:\n"
             steps += f"            print(f\"DRY-RUN skipped destructive tool: {name}\")\n"
             steps += f"            messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
-            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"skipped\": True}})\n"
+            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"event_id\": {jeid}, \"name\": {jname}, \"skipped\": True}})\n"
             steps += "        else:\n"
-            steps += f"            _result_{step_num} = dispatch_tool({jname}, _sub_args_{step_num}, _tool_default_{step_num}, step={step_num})\n"
+            steps += f"            _result_{step_num} = dispatch_tool({jname}, _sub_args_{step_num}, _tool_default_{step_num}, event_id={jeid})\n"
             steps += f"            messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": _result_{step_num}, \"name\": {jname}}})\n"
-            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n"
+            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"event_id\": {jeid}, \"name\": {jname}, \"duration_ms\": {dur_val}}})\n"
             steps += "\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
@@ -631,7 +645,7 @@ def _build_replay_steps(events: list) -> str:
                 steps += f"        #   Reasoning: {jreasoning}\n"
             jfr = json.dumps(fr, ensure_ascii=False)
             ht = str(bool(thinking) or False)
-            ds = dur_ms if dur_ms else "null"
+            ds = dur_ms if dur_ms else "None"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"post_api_request\", \"finish_reason\": {jfr}, \"api_duration_ms\": {ds}, \"has_thinking\": {ht}}})\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
@@ -664,7 +678,7 @@ def _build_replay_steps(events: list) -> str:
             steps += guard
             steps += f"        # Step {step_num}: API Error (status={status}, reason={reason})\n"
             jreason = json.dumps(reason or "", ensure_ascii=False)
-            ss = status if status is not None else "null"
+            ss = status if status is not None else "None"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"api_request_error\", \"status_code\": {ss}, \"reason\": {jreason}}})\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
@@ -955,9 +969,9 @@ def _make_parse_args_function() -> str:
                         help="Start from step N (inclusive)")
     parser.add_argument("--to", dest="to_step", type=int, default=None,
                         help="Stop at step N (inclusive)")
-    parser.add_argument("--stop-at", type=int, default=None, help="Stop after N steps")
+    parser.add_argument("--stop-at", type=int, default=None, help="Stop after executing N steps (bounds execution, not display)")
     parser.add_argument("--substitute-tool", type=str, default=None,
-                        help="Replace tool call args: '<step> <json_args>'")
+                        help="Replace tool call args: '<event_id> <json_args>'")
     parser.add_argument("--show-state", action="store_true",
                         help="Print full agent state after each step")
     parser.add_argument("--diff", type=str, default=None,

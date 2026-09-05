@@ -15,8 +15,8 @@ from tracer import TraceEvent
 
 def _sample_events():
     return [
-        TraceEvent(kind="system_prompt", data={"text": "Be helpful."}),
-        TraceEvent(kind="user_message", data={"text": "Search the web"}),
+        TraceEvent(kind="system_prompt", data={"text": "Be helpful."}, event_id="system_prompt-1"),
+        TraceEvent(kind="user_message", data={"text": "Search the web"}, event_id="user-1"),
         TraceEvent(
             kind="llm_call",
             data={
@@ -32,6 +32,7 @@ def _sample_events():
                     }
                 ],
             },
+            event_id="call_1",
         ),
         TraceEvent(
             kind="tool_call",
@@ -40,8 +41,9 @@ def _sample_events():
                 "name": "web_search",
                 "content": '{"results": []}',
             },
+            event_id="call_1",
         ),
-        TraceEvent(kind="final_response", data={"text": "done"}),
+        TraceEvent(kind="final_response", data={"text": "done"}, event_id="final-1"),
     ]
 
 

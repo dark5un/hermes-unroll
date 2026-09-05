@@ -149,8 +149,8 @@ omit skipped steps from `timing_log` while still recording `from_step` /
 |------|---------|
 | `--live` | Execute real LLM calls (default: dry-run from `RESPONSE_CACHE`) |
 | `--from N --to M` | Replay step range; skipped steps omitted from `timing_log`; `from_step`/`to_step` in result |
-| `--stop-at N` | Print first N steps as JSON after replay |
-| `--substitute-tool '<step> <json_args>'` | Replace a tool call's dispatched args |
+| `--stop-at N` | Execute only the first N steps from `--from` (bounds execution, not display) |
+| `--substitute-tool '<event_id> <json_args>'` | Replace a tool call's dispatched args (matched by stable event id) |
 | `--show-state` | Print step/message counts after replay |
 | `--diff OTHER.py` | Step diff vs another trace (safe `ast.literal_eval` loader, never `exec`) |
 | `--edit '<step> <new-text>'` | Counterfactual: mutate message, replay suffix, save `*_edit_<ts>.py` (never overwrites) |
@@ -174,6 +174,11 @@ pip install pydantic-ai  # only for --engine pydantic
 ```
 
 Dry-run (no flags) needs nothing: it replays from `RESPONSE_CACHE`.
+Cache keys are stable event ids (`tool:<event_id>` / `llm:<event_id>`
+assigned at record time), so every lookup resolves to its own event
+across all 13 event kinds; a miss raises loudly instead of silently
+serving a default. Generated tool steps carry their recorded (redacted)
+arguments as dispatch defaults.
 
 ## Practical features
 

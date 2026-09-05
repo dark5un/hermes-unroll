@@ -49,9 +49,17 @@ def _redact_value(v: object, custom_patterns: list[str] | None = None) -> object
 
 
 def redact_event(event, custom_patterns: list[str] | None = None):
-    """Return a copy of event with all string data redacted."""
+    """Return a copy of event with all string data redacted.
+
+    Both pattern-based (keys, emails, tokens in free text) and
+    structured (values under known secret key names like ``token`` or
+    ``password``, regardless of value shape — e.g. a JWT that matches
+    no text pattern).
+    """
     new_event = copy.deepcopy(event)
-    new_event.data = _redact_value(new_event.data, custom_patterns)
+    new_event.data = _redact_value(
+        _redact_structured(new_event.data), custom_patterns
+    )
     return new_event
 
 

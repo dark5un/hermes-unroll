@@ -68,19 +68,24 @@ ALLOW_DESTRUCTIVE = False
 DESTRUCTIVE_TOOLS = {"terminal", "patch", "write_file", "execute_code"}
 $LIVE_HELPER
 
-def dispatch_tool(name, args, default=None, step=None):
-    """Cache lookup with substitute override for tool results."""
+def dispatch_tool(name, args, default=None, event_id=None):
+    """Cache lookup (by stable event_id) with substitute override for tool results.
+
+    A miss raises loudly — a silent ``return default`` fallback is what hid
+    a 3-in-4 wrong-event lookup rate when keys were positional indexes.
+    """
     if SUBSTITUTE_TOOL:
         try:
             _s, _j = SUBSTITUTE_TOOL.split(" ", 1)
-            if step is not None and int(_s) == step:
+            if event_id is not None and str(_s) == str(event_id):
                 return "[substituted] " + name + "(" + _j + ")"
         except Exception:
             pass
-    if step is not None:
-        _entry = RESPONSE_CACHE.get("tool_" + str(step))
+    if event_id is not None:
+        _entry = RESPONSE_CACHE.get("tool:" + str(event_id))
         if isinstance(_entry, dict) and "result" in _entry:
             return _entry["result"]
+        raise KeyError("no cached result for tool event " + str(event_id))
     return default
 
 
@@ -294,9 +299,16 @@ if __name__ == "__main__":
         print("=== STRUCTURED OUTPUT ===")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         sys.exit(0)
-    result = replay(from_step=args.from_step, to_step=args.to_step)
+    _to = args.to_step
     if args.stop_at is not None:
-        steps = result.get("steps", [])[:args.stop_at]
+        # --stop-at N bounds execution to N steps (a count from from_step),
+        # not display: steps after the bound never execute. --to still wins
+        # when it is tighter (both are inclusive step indexes after mapping).
+        _stop_to = (args.from_step or 0) + args.stop_at - 1
+        _to = _stop_to if _to is None else min(_to, _stop_to)
+    result = replay(from_step=args.from_step, to_step=_to)
+    if args.stop_at is not None:
+        steps = result.get("steps", [])
         print(json.dumps(steps, indent=2))
     if args.show_state:
         print(f"State: {len(result.get('steps', []))} steps, {len(result.get('messages', []))} messages")

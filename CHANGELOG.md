@@ -42,6 +42,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   passed through and emitted; keys are never embedded.
 - First-turn user message recorded exactly once via the hook's `user_message`
   parameter (UN-9); the reverse-scan duplication is deleted.
+- Replay identity (UN-2/UN-3/UN-4/UN-10): stable `event_id` assigned at
+  record time; `RESPONSE_CACHE` keyed `tool:<event_id>`/`llm:<event_id>`
+  (100% exact resolution, misses raise loudly); recorded (redacted) tool
+  args emitted as dispatch defaults; captured `provider_config`
+  base_url/api_mode emitted without keys; `--stop-at N` bounds execution
+  (count from `--from`) instead of truncating display. Structured
+  secret-key redaction now also applies to event payloads (e.g. JWTs under
+  `token` keys that match no text pattern).
 
 **Existing artifacts:** traces written before this fix may contain an
 unredacted system prompt / profile block at mode 0644. Re-permission with

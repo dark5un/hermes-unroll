@@ -4,21 +4,32 @@ TraceEvent, TraceSession, and TraceRecorder for capturing
 every decision point in the Hermes agent loop.
 """
 
+import itertools
 import time
 from dataclasses import dataclass, field
+
+# Process-wide monotonic counter backing stable event ids.
+_event_counter = itertools.count()
 
 
 @dataclass
 class TraceEvent:
-    """A single decision point in the agent loop."""
+    """A single decision point in the agent loop.
+
+    ``event_id`` is assigned at record time and is the stable identity
+    for replay cache keys and emitted steps — never a positional index.
+    """
+
     kind: str
     timestamp: float = field(default_factory=time.time)
     data: dict = field(default_factory=dict)
+    event_id: str = ""
 
 
 @dataclass
 class TraceSession:
     """Container for one complete agent session's trace."""
+
     session_id: str
     model: str
     provider: str
@@ -44,16 +55,22 @@ class TraceRecorder:
         self.session = TraceSession(session_id="", model="", provider="")
         self.finalized = False
 
-    def record(self, kind: str, data: dict) -> None:
+    def record(self, kind: str, data: dict, event_id: str = "") -> TraceEvent:
         """Append a TraceEvent with the given kind and data.
 
-        After finalize() the recorder is sealed: further records are
-        dropped (logged at debug) so post-finalize hooks cannot leak
-        events into an already-written trace.
+        Assigns a stable ``event_id`` (``f"{kind}-{n}"`` from a monotonic
+        counter) unless the caller supplies one (e.g. the host's
+        ``tool_call_id``/``turn_id``). After finalize() the recorder is
+        sealed: further records are dropped so post-finalize hooks cannot
+        leak events into an already-written trace. Returns the event.
         """
         if self.finalized:
-            return
-        self.session.events.append(TraceEvent(kind=kind, data=data or {}))
+            return TraceEvent(kind=kind, data=data or {}, event_id=event_id)
+        event = TraceEvent(
+            kind=kind, data=data or {}, event_id=event_id or f"{kind}-{next(_event_counter)}"
+        )
+        self.session.events.append(event)
+        return event
 
     def set_metadata(
         self,

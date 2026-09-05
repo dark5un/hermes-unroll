@@ -111,7 +111,7 @@ def _on_post_llm_call(
         "response_tool_calls": tool_calls or [],
         "model": model,
         "provider": platform,
-    })
+    }, event_id=kwargs.get("api_request_id") or kwargs.get("turn_id") or "")
 
 
 def _on_post_tool_call(
@@ -134,13 +134,17 @@ def _on_post_tool_call(
         logger.debug("hermes-unroll: post_tool_call for unknown session %r — dropping", session_id)
         return
 
+    # Stable identity prefers the host's tool_call_id, then task_id.
+    event_id = kwargs.get("tool_call_id") or task_id or ""
     ctx.recorder.record("tool_call", {
         "name": tool_name,
         "args": args,
         "content": result,
-        "tool_call_id": task_id,
+        "tool_call_id": kwargs.get("tool_call_id") or task_id,
         "duration_ms": duration_ms,
-    })
+        "status": kwargs.get("status"),
+        "error_type": kwargs.get("error_type"),
+    }, event_id=event_id)
 
 
 def _generate_trace(session_id: str, completed: bool = True):
