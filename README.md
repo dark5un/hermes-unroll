@@ -96,6 +96,35 @@ uv run pytest          # 40 tests pass
 uv run ruff check .    # lint clean
 ```
 
+## Execution
+
+Running a trace replays the original session step by step and prints a
+timing summary plus a structured JSON `result` (see
+`docs/EXECUTION_CONTRACT.md`):
+
+```bash
+python ~/.hermes/traces/unrolled/<session>.py
+python ~/.hermes/traces/unrolled/<session>.py --from=2 --to=5
+```
+
+New result keys:
+
+| Key | Meaning |
+|-----|---------|
+| `started_at` | ISO-8601 start timestamp of the original session |
+| `replay_duration_ms` | Wall time of the replay run in milliseconds |
+| `timing_log` | Per-step timing comparison log (one entry per executed step) |
+
+Each `timing_log` entry carries `step`, `kind`, `original_offset_ms`
+(offset in the original `TIMELINE`), `replay_offset_ms` (ms since replay
+start), `delta_ms` (`replay_offset_ms - original_offset_ms`),
+`duration_ms` (original step duration, `null` when unknown), and
+`replay_duration_ms` (`round((t1 - t0) * 1000)` per guarded step block).
+Every `steps[i]` entry also gains `replay_duration_ms`, and
+`timing_log[i]` shares its `step` index. Range replays (`--from`/`--to`)
+omit skipped steps from `timing_log` while still recording `from_step` /
+`to_step` in `result`.
+
 ## Complementary: Pulse
 
 hermes-unroll pairs with [Pulse](https://github.com/dark5un/pulse) — a session health coach that analyses conversation quality. hermes-unroll produces structured traces; Pulse analyses them for signal patterns, attribution, and coaching insights.

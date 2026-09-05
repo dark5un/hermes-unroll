@@ -144,11 +144,20 @@ def _build_replay_steps(events: list) -> str:
     steps = ""
     step_num = 0
     for event in events:
-        guard = f"    if _from <= {step_num} <= _to:\n"
+        guard = f"    if _from <= {step_num} <= _to:\n        _t0 = time.perf_counter()\n"
         if event.kind == "system_prompt":
             steps += guard
             steps += f"        # Step {step_num}: System prompt (already set)\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"system_prompt\"}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "user_message":
             txt = event.data.get("text", "")
@@ -157,6 +166,15 @@ def _build_replay_steps(events: list) -> str:
             steps += f"        # Step {step_num}: User message\n"
             steps += f"        messages.append({{\"role\": \"user\", \"content\": {jtxt}}})\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"user_message\", \"text\": {jtxt}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "llm_call":
             txt = event.data.get("response_text", "")
@@ -177,6 +195,15 @@ def _build_replay_steps(events: list) -> str:
                 steps += "        messages.append(msg)\n"
                 steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"text\": {jtxt}}})\n"
             steps += "\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "tool_call":
             name = event.data.get("name", "")
@@ -192,6 +219,15 @@ def _build_replay_steps(events: list) -> str:
             steps += f"        # Step {step_num}: Tool call: {name}{dur_comment}\n"
             steps += f"        messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "final_response":
             txt = event.data.get("text", "")
@@ -199,6 +235,15 @@ def _build_replay_steps(events: list) -> str:
             steps += guard
             steps += f"        # Step {step_num}: Final response\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"final_response\", \"text\": {jtxt}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "pre_api_request":
             apic = event.data.get("api_call_count", 0)
@@ -208,6 +253,15 @@ def _build_replay_steps(events: list) -> str:
             steps += f"        # Step {step_num}: API Request (call #{apic}, retry #{rcnt})\n"
             steps += f"        #   Approx tokens: {approx}\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"pre_api_request\", \"api_call_count\": {apic}, \"approx_input_tokens\": {approx}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "post_api_request":
             fr = event.data.get("finish_reason", "")
@@ -232,6 +286,15 @@ def _build_replay_steps(events: list) -> str:
             ht = str(bool(thinking) or False)
             ds = dur_ms if dur_ms else "null"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"post_api_request\", \"finish_reason\": {jfr}, \"api_duration_ms\": {ds}, \"has_thinking\": {ht}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "api_request_error":
             status = event.data.get("status_code")
@@ -241,6 +304,15 @@ def _build_replay_steps(events: list) -> str:
             jreason = json.dumps(reason or "", ensure_ascii=False)
             ss = status if status is not None else "null"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"api_request_error\", \"status_code\": {ss}, \"reason\": {jreason}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "subagent_start":
             goal = event.data.get("child_goal", "")
@@ -251,6 +323,15 @@ def _build_replay_steps(events: list) -> str:
             steps += f"        # Step {step_num}: Subagent Start - {role}\n"
             steps += f"        #   Goal: {jgoal}\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_start\", \"role\": {jrole}, \"goal\": {jgoal}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "subagent_stop":
             summary = event.data.get("child_summary", "")
@@ -262,6 +343,15 @@ def _build_replay_steps(events: list) -> str:
                 jsummary = json.dumps(summary[:200], ensure_ascii=False)
                 steps += f"        #   Summary: {jsummary}\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"subagent_stop\", \"role\": {jrole}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "on_stream_delta":
             delta = event.data.get("delta", "")
@@ -270,6 +360,15 @@ def _build_replay_steps(events: list) -> str:
             steps += guard
             steps += f"        # Step {step_num}: Stream delta ({knd}) +{dlen} chars\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"stream_delta\", \"len\": {dlen}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
         elif event.kind == "pre_tool_call":
             tname = event.data.get("name", "")
@@ -277,6 +376,15 @@ def _build_replay_steps(events: list) -> str:
             steps += guard
             steps += f"        # Step {step_num}: Pre-tool call guard - {tname}\n"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"pre_tool_call\", \"name\": {jtname}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
             step_num += 1
     return steps
 
@@ -304,6 +412,10 @@ def _build_program_text(
     replay_steps = _build_replay_steps(events)
     timeline_json = json.dumps(timeline, indent=2, ensure_ascii=False)
     dur_str = _human_duration(total_duration_ms)
+    if started_at:
+        started_at_iso = datetime.fromtimestamp(started_at, UTC).isoformat()
+    else:
+        started_at_iso = ""
     usage = _build_usage_summary(events)
     jusage = json.dumps(usage, indent=2)
     rb = _build_reasoning_blocks(events)
@@ -334,6 +446,7 @@ def _build_program_text(
         JSID=json.dumps(session_id, ensure_ascii=False),
         JMODEL=json.dumps(model, ensure_ascii=False),
         JPROV=json.dumps(provider, ensure_ascii=False),
+        JSTARTED=json.dumps(started_at_iso, ensure_ascii=False),
         JSYS=json.dumps(system_prompt, ensure_ascii=False),
         TOTAL_DUR=str(total_duration_ms),
         JEXP=json.dumps(final_response, ensure_ascii=False),
@@ -361,9 +474,11 @@ def _make_replay_function(replay_steps_body: str) -> str:
     """
     messages: list[dict] = []
     step_log: list[dict] = []
+    timing_log: list[dict] = []
     step_num = 0
     _from = from_step if from_step is not None else 0
     _to = to_step if to_step is not None else 999999
+    _replay_start = time.perf_counter()
 
     print(f"Replaying session {{SESSION_ID}}")
     print(f"Model: {{MODEL}}  Provider: {{PROVIDER}}")
@@ -400,19 +515,27 @@ def _make_replay_function(replay_steps_body: str) -> str:
     print()
     print("--- Done ---")
     print(f"Messages: {{len(messages)}}")
+    _replay_end = time.perf_counter()
+    _replay_duration_ms = round((_replay_end - _replay_start) * 1000)
+    print(f"Timing: {{len(timing_log)}} steps in {{_human_duration(_replay_duration_ms)}} "
+          f"(original {{_human_duration(ORIGINAL_DURATION_MS)}})")
+    print(f"Replay duration: {{_replay_duration_ms}}ms")
 
     result = {{
         "session_id": SESSION_ID,
         "model": MODEL,
         "provider": PROVIDER,
+        "started_at": STARTED_AT,
         "original_duration_ms": ORIGINAL_DURATION_MS,
+        "replay_duration_ms": _replay_duration_ms,
         "messages_count": len(messages),
-        "from_step": _from,
-        "to_step": _to,
+        "from_step": from_step,
+        "to_step": to_step,
         "steps": step_log,
         "messages": messages,
         "usage": USAGE,
         "reasoning_blocks": REASONING_BLOCKS,
+        "timing_log": timing_log,
         "response_cache": RESPONSE_CACHE,
     }}
     return result'''
