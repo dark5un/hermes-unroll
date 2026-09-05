@@ -157,6 +157,24 @@ omit skipped steps from `timing_log` while still recording `from_step` /
 | `--engine openai\|pydantic` | Live engine (default openai; stdlib urllib fallback, no hard deps) |
 | `--allow-destructive` | Consent gate: without it, terminal/patch/write_file/execute_code print `[DRY-RUN]` and skip |
 
+### Live replay prerequisites
+
+`--live` needs an API key: `OPENAI_API_KEY` → `HERMES_API_KEY` →
+`~/.hermes/.env`, and an OpenAI-compatible `base_url` (captured in
+`PROVIDER_CONFIG` at trace time).
+
+No install is required for the default path — without the `openai`
+package the trace falls back to stdlib `urllib`. Install only for the
+path you want:
+
+```bash
+pip install openai       # SDK path (default engine; nicer errors/retries)
+pip install pydantic-ai  # only for --engine pydantic
+# or as extras: pip install hermes-unroll[live] / hermes-unroll[pydantic]
+```
+
+Dry-run (no flags) needs nothing: it replays from `RESPONSE_CACHE`.
+
 ## Practical features
 
 | Feature | Module | Notes |

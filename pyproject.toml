@@ -6,6 +6,10 @@ authors = [{name = "Panagiotis Xynos - hi@onlyascii.io"}]
 requires-python = ">=3.12"
 dependencies = []
 
+[project.optional-dependencies]
+live = ["openai>=1.0"]
+pydantic = ["pydantic-ai>=0.1"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-q --tb=short"

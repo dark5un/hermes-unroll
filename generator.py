@@ -904,7 +904,7 @@ def _make_parse_args_function() -> str:
     parser = argparse.ArgumentParser(
         description="hermes-unroll replayer - reproduces and analyses agent traces"
     )
-    parser.add_argument("--live", action="store_true", help="Execute real LLM calls")
+    parser.add_argument("--live", action="store_true", help="Execute real LLM calls (needs API key; pip install openai for SDK path, else stdlib urllib)")
     parser.add_argument("--from", dest="from_step", type=int, default=None,
                         help="Start from step N (inclusive)")
     parser.add_argument("--to", dest="to_step", type=int, default=None,
@@ -922,7 +922,7 @@ def _make_parse_args_function() -> str:
                         help="Counterfactual: change prompt and re-execute")
     parser.add_argument("--engine", type=str, default="openai",
                         choices=["openai", "pydantic"],
-                        help="Live engine: openai SDK (default) or pydantic")
+                        help="Live engine: openai SDK (default; pip install openai) or pydantic (pip install pydantic-ai)")
     parser.add_argument("--allow-destructive", action="store_true",
                         help="Allow destructive tools to run (default: dry-run skip)")
     return parser.parse_args()'''

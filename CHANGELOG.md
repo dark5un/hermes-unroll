@@ -4,6 +4,19 @@ All notable changes to hermes-unroll are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Live replay prerequisites documented where users actually meet `--live`:
+  generated trace docstring states the no-install urllib default plus
+  `pip install openai` (SDK path) / `pip install pydantic-ai`
+  (`--engine pydantic`) and the `OPENAI_API_KEY` -> `HERMES_API_KEY` ->
+  `~/.hermes/.env` key order; `--live`/`--engine` `--help` repeats it.
+  New `README` section "Live replay prerequisites".
+- `pyproject` optional extras: `pip install hermes-unroll[live]` (openai)
+  and `hermes-unroll[pydantic]` (pydantic-ai). Runtime stays zero-dep.
+
 ## [0.4.0] - 2026-09-05
 
 ### Added

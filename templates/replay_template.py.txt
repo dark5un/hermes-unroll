@@ -16,6 +16,12 @@ Flags:
   python {file} --edit '...'  Counterfactual: edit + re-execute
   python {file} --engine=openai   Live engine: openai (default) or pydantic
   python {file} --allow-destructive  Allow destructive tools to run
+
+Live replay prerequisites:
+  Default (no install): stdlib urllib POST to base_url/chat/completions.
+  SDK path: pip install openai   (uses OpenAI client when installed)
+  Pydantic engine: pip install pydantic-ai  (for --engine pydantic)
+  API key: OPENAI_API_KEY -> HERMES_API_KEY -> ~/.hermes/.env
 """
 
 import argparse
