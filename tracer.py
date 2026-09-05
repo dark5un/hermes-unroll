@@ -31,6 +31,8 @@ class TraceSession:
     total_api_calls: int = 0
     total_tokens_in: int = 0
     total_tokens_out: int = 0
+    tool_schemas: list = field(default_factory=list)
+    provider_config: dict = field(default_factory=dict)
 
 
 class TraceRecorder:

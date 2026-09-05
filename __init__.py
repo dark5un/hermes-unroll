@@ -126,6 +126,36 @@ def _generate_trace(session_id: str, completed: bool = True):
     if not events:
         return
 
+    # B2: redact secrets from every event before generation (fail-open).
+    try:
+        from redact import redact_event
+
+        _redacted = []
+        for _e in events:
+            try:
+                _redacted.append(redact_event(_e))
+            except Exception:  # noqa: BLE001
+                _redacted.append(_e)
+        events = _redacted
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+    # B2: cost ledger — summed usage x model pricing (fail-open).
+    cost_usd = 0.0
+    try:
+        from pricing import estimate_cost
+
+        _tin = 0
+        _tout = 0
+        for _e in events:
+            if _e.kind == "post_api_request":
+                _u = _e.data.get("usage", {}) or {}
+                _tin += _u.get("input_tokens", 0) or 0
+                _tout += _u.get("output_tokens", 0) or 0
+        cost_usd = estimate_cost(_model or _recorder.session.model, _tin, _tout)
+    except Exception:  # noqa: BLE001
+        cost_usd = 0.0
+
     traces_dir = _resolve_traces_dir()
     try:
         traces_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +168,7 @@ def _generate_trace(session_id: str, completed: bool = True):
             user_message=_recorder.session.initial_user_message,
             final_response=_recorder.session.final_response,
             started_at=_recorder.session.started_at,
+            cost_usd=cost_usd,
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
         # Guarded Pulse auto-score (G5 init-part): opt-in via
@@ -271,6 +302,31 @@ def _on_pre_api_request(
         "message_count": message_count,
         "tool_count": tool_count,
     })
+
+    # B1: snapshot tool schemas + provider routing on FIRST pre_api_request
+    # per session only. Fail-open: missing request key must never raise.
+    try:
+        request = kwargs.get("request") or {}
+        system_prompt = kwargs.get("system_prompt") or ""
+        if system_prompt and not _recorder.session.system_prompt:
+            _recorder.session.system_prompt = system_prompt
+        already = any(e.kind == "tool_schemas" for e in _recorder.session.events)
+        if not already:
+            body = request.get("body") or {} if isinstance(request, dict) else {}
+            tools = body.get("tools") or [] if isinstance(body, dict) else []
+            _recorder.session.tool_schemas = list(tools)
+            _recorder.session.provider_config = {
+                "provider": provider,
+                "base_url": kwargs.get("base_url", ""),
+                "api_mode": kwargs.get("api_mode", ""),
+                "model": model,
+            }
+            _recorder.record("tool_schemas", {
+                "tools": list(tools),
+                "tool_count": tool_count,
+            })
+    except Exception:  # noqa: BLE001, S110
+        pass
 
 
 def _on_post_api_request(

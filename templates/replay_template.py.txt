@@ -13,6 +13,8 @@ Flags:
   python {file} --show-state  Print state after each step node
   python {file} --diff other.py  Compare with another trace
   python {file} --edit '...'  Counterfactual: edit + re-execute
+  python {file} --engine=openai   Live engine: openai (default) or pydantic
+  python {file} --allow-destructive  Allow destructive tools to run
 """
 
 import argparse
@@ -32,6 +34,7 @@ from datetime import datetime
 # Total events: $EVENT_N
 # Messages: $MSG_CNT
 # Original duration: $DUR_STR
+# Cost: $COST_STR
 
 SESSION_ID = $JSID
 MODEL = $JMODEL
@@ -44,6 +47,67 @@ TIMELINE = $TIMELINE_JSON
 USAGE = $JUSAGE
 REASONING_BLOCKS = $JRB
 RESPONSE_CACHE = $JCACHE
+COST = $JCOST
+STATE_GRAPH = $JGRAPH
+TOOL_SCHEMAS = $TOOL_SCHEMAS_JSON
+PROVIDER_CONFIG = $PROVIDER_JSON
+LIVE = False
+ENGINE = "openai"
+SUBSTITUTE_TOOL = None
+ALLOW_DESTRUCTIVE = False
+DESTRUCTIVE_TOOLS = {"terminal", "patch", "write_file", "execute_code"}
+$LIVE_HELPER
+
+def dispatch_tool(name, args, default=None, step=None):
+    """Cache lookup with substitute override for tool results."""
+    if SUBSTITUTE_TOOL:
+        try:
+            _s, _j = SUBSTITUTE_TOOL.split(" ", 1)
+            if step is not None and int(_s) == step:
+                return "[substituted] " + name + "(" + _j + ")"
+        except Exception:
+            pass
+    if step is not None:
+        _entry = RESPONSE_CACHE.get("tool_" + str(step))
+        if isinstance(_entry, dict) and "result" in _entry:
+            return _entry["result"]
+    return default
+
+try:
+    from langgraph.graph import END, StateGraph
+    HAS_LANGGRAPH = True
+except ImportError:
+    StateGraph = None
+    END = None
+    HAS_LANGGRAPH = False
+
+
+def build_langgraph():
+    """Build a LangGraph StateGraph from STATE_GRAPH.
+
+    Returns a compiled graph when langgraph is installed, else None.
+    Each trace step becomes a node; edges chain consecutive steps.
+    """
+    if not HAS_LANGGRAPH:
+        return None
+    builder = StateGraph(dict)
+    nodes = STATE_GRAPH.get("nodes", []) if isinstance(STATE_GRAPH, dict) else []
+    edges = STATE_GRAPH.get("edges", []) if isinstance(STATE_GRAPH, dict) else []
+    for node in nodes:
+        nid = str(node.get("id"))
+
+        def _step(state, _nid=nid):
+            updated = dict(state)
+            updated["last_step"] = _nid
+            return updated
+
+        builder.add_node(nid, _step)
+    if nodes:
+        builder.set_entry_point(str(nodes[0].get("id")))
+        for edge in edges:
+            builder.add_edge(str(edge.get("from")), str(edge.get("to")))
+        builder.add_edge(str(nodes[-1].get("id")), END)
+    return builder.compile()
 
 $REPLAY_FUNC
 
@@ -53,6 +117,10 @@ $HUMAN_DUR_FUNC
 
 if __name__ == "__main__":
     args = _parse_args()
+    LIVE = bool(args.live)
+    ENGINE = args.engine
+    SUBSTITUTE_TOOL = args.substitute_tool
+    ALLOW_DESTRUCTIVE = bool(args.allow_destructive)
     if args.diff:
         other_timeline = None
         try:

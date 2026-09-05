@@ -32,6 +32,7 @@ def generate_trace_program(
     user_message: str = "",
     final_response: str = "",
     started_at: float = 0,
+    cost_usd: float = 0.0,
 ) -> str:
     """Compile events into a Hermes-independent replay program."""
     traces_dir = _get_traces_dir()
@@ -54,6 +55,7 @@ def generate_trace_program(
         system_prompt=system_prompt,
         final_response=final_response,
         started_at=started_at,
+        cost_usd=cost_usd,
     )
 
     filepath.write_text(code, encoding="utf-8")
@@ -93,6 +95,69 @@ def _build_response_cache(events: list) -> dict:
             }
             step += 1
     return cache
+
+
+def _build_state_graph(events: list, started_at: float = 0) -> dict:
+    """Build a state-graph view of the trace (Phase D1).
+
+    Returns {"nodes": [...], "edges": [...], "subgraphs": [...]} where
+    nodes carry id/kind/label/original_offset_ms, edges chain consecutive
+    steps, and subgraphs link subagent_start -> matching subagent_stop
+    by child_role. Accepts dict or attribute events (diff.py duck-typing).
+    """
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, int]] = []
+    subgraphs: list[dict[str, Any]] = []
+    pending: dict[str, list[int]] = {}
+    for i, e in enumerate(events):
+        if isinstance(e, dict):
+            kind = str(e.get("kind", "?"))
+            data = e.get("data", {})
+            if not isinstance(data, dict):
+                data = {"value": data}
+            ts = e.get("timestamp")
+        else:
+            kind = str(getattr(e, "kind", "?"))
+            data = getattr(e, "data", {})
+            if not isinstance(data, dict):
+                data = {"value": data}
+            ts = getattr(e, "timestamp", None)
+        try:
+            ts_f = float(ts) if ts is not None else None
+        except (TypeError, ValueError):
+            ts_f = None
+        if started_at and ts_f is not None:
+            offset_ms = int((ts_f - started_at) * 1000)
+        else:
+            offset_ms = 0
+        label = f"{i}: {kind}"
+        if kind == "subagent_start":
+            role = str(data.get("child_role", ""))
+            label = f"{i}: subagent_start:{role}" if role else label
+        elif kind == "subagent_stop":
+            role = str(data.get("child_role", ""))
+            label = f"{i}: subagent_stop:{role}" if role else label
+        elif kind == "tool_call":
+            name = str(data.get("name", ""))
+            label = f"{i}: tool_call:{name}" if name else label
+        nodes.append({
+            "id": i,
+            "kind": kind,
+            "label": label,
+            "original_offset_ms": offset_ms,
+        })
+        if kind == "subagent_start":
+            role = str(data.get("child_role", ""))
+            pending.setdefault(role, []).append(i)
+        elif kind == "subagent_stop":
+            role = str(data.get("child_role", ""))
+            stack = pending.get(role)
+            if stack:
+                start = stack.pop()
+                subgraphs.append({"role": role, "start": start, "stop": i})
+    for i in range(len(nodes) - 1):
+        edges.append({"from": i, "to": i + 1})
+    return {"nodes": nodes, "edges": edges, "subgraphs": subgraphs}
 
 
 def _build_usage_summary(events: list) -> dict:
@@ -139,6 +204,134 @@ def _build_reasoning_blocks(events: list) -> list[dict]:
     return blocks
 
 
+def _make_live_helper() -> str:
+    """Build the _live_llm_call() helper source for the generated program.
+
+    Default engine: direct ``openai`` SDK, lazily imported
+    (``OpenAI(base_url, api_key)`` + ``chat.completions.create`` with
+    ``messages`` and ``tools=TOOL_SCHEMAS``). PydanticAI is opt-in behind
+    ``engine="pydantic"``. When ``openai`` is not installed, falls back to
+    stdlib ``urllib`` POST to ``base_url/chat/completions`` with a Bearer
+    key resolved as ``OPENAI_API_KEY`` -> ``HERMES_API_KEY`` -> ``.env``
+    file under ``HERMES_HOME`` (or ``~/.hermes``). Returns
+    ``(text, tool_calls)``. Never prints API keys.
+    """
+    return '''
+def _load_api_key(explicit=""):
+    """Resolve the API key without ever printing it."""
+    import os as _os
+    from pathlib import Path as _Path
+    if explicit:
+        return explicit
+    for _var in ("OPENAI_API_KEY", "HERMES_API_KEY"):
+        _val = _os.environ.get(_var)
+        if _val:
+            return _val
+    _home = _os.environ.get("HERMES_HOME")
+    _candidates = []
+    if _home:
+        _candidates.append(_Path(_home) / ".env")
+    _candidates.append(_Path.home() / ".hermes" / ".env")
+    for _env_file in _candidates:
+        try:
+            if _env_file.exists():
+                for _line in _env_file.read_text().splitlines():
+                    _k, _sep, _v = _line.partition("=")
+                    if _k.strip() in ("OPENAI_API_KEY", "HERMES_API_KEY") and _v.strip():
+                        return _v.strip().strip("\\'\\"")
+        except OSError:
+            continue
+    raise SystemExit("no API key: set OPENAI_API_KEY/HERMES_API_KEY or ~/.hermes/.env")
+
+
+def _live_llm_call(messages, model, base_url, api_key="", engine="openai"):
+    """Execute a real LLM call. Returns (text, tool_calls)."""
+    import json as _json
+    if engine == "pydantic":
+        try:
+            from pydantic_ai import Agent
+        except ImportError:
+            raise SystemExit("pydantic engine needs the pydantic-ai extra installed")
+        _agent = Agent(model="openai:" + model)
+        _out = _agent.run_sync(messages)
+        return (_out.output if hasattr(_out, "output") else str(_out)), []
+    try:
+        from openai import OpenAI
+    except ImportError:
+        import urllib.request as _request
+        _key = _load_api_key(api_key)
+        _url = (base_url or "").rstrip("/") + "/chat/completions"
+        _req = _request.Request(
+            _url,
+            data=_json.dumps(
+                {"model": model, "messages": messages, "tools": TOOL_SCHEMAS}
+            ).encode(),
+            headers={"Authorization": "Bearer " + _key, "Content-Type": "application/json"},
+        )
+        _body = _json.load(_request.urlopen(_req, timeout=60))
+        _msg = _body["choices"][0]["message"]
+        return _msg.get("content", "") or "", _msg.get("tool_calls", []) or []
+    _key = _load_api_key(api_key)
+    _client = OpenAI(base_url=base_url or None, api_key=_key)
+    _resp = _client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=TOOL_SCHEMAS,
+        tool_choice="auto",
+        temperature=0.0,
+    )
+    _msg = _resp.choices[0].message
+    _text = _msg.content or ""
+    _tcs = []
+    for _call in _msg.tool_calls or []:
+        _tcs.append({
+            "id": _call.id,
+            "type": "function",
+            "function": {
+                "name": _call.function.name,
+                "arguments": _call.function.arguments,
+            },
+        })
+    return _text, _tcs
+'''
+
+
+def _build_tool_schemas(events: list) -> list[dict]:
+    """Derive TOOL_SCHEMAS from tool names seen in the trace."""
+    names: list[str] = []
+    for e in events:
+        if e.kind == "tool_call":
+            n = e.data.get("name", "")
+            if n and n not in names:
+                names.append(n)
+        elif e.kind == "llm_call":
+            for tc in e.data.get("response_tool_calls", []) or []:
+                n = (tc.get("function", {}) or {}).get("name", "")
+                if n and n not in names:
+                    names.append(n)
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": n,
+                "description": "",
+                "parameters": {"type": "object"},
+            },
+        }
+        for n in names
+    ]
+
+
+def _build_provider_config(model: str, provider: str) -> dict:
+    """Build the PROVIDER_CONFIG constant (no secrets baked in)."""
+    return {
+        "model": model,
+        "provider": provider,
+        "base_url": "",
+        "engine": "openai",
+    }
+
+
 def _build_replay_steps(events: list) -> str:
     """Build step-by-step execution code for all 12 event kinds with range guard."""
     steps = ""
@@ -181,19 +374,32 @@ def _build_replay_steps(events: list) -> str:
             tcs = event.data.get("response_tool_calls", [])
             steps += guard
             steps += f"        # Step {step_num}: LLM call\n"
+            steps += "        if LIVE:\n"
+            steps += "            _live_text, _live_tcs = _live_llm_call(messages, MODEL, PROVIDER_CONFIG.get(\"base_url\", \"\"), \"\", ENGINE)\n"
+            steps += "            if _live_tcs:\n"
+            steps += "                msg = {\"role\": \"assistant\", \"tool_calls\": _live_tcs}\n"
+            steps += "                if _live_text:\n"
+            steps += "                    msg[\"content\"] = _live_text\n"
+            steps += "                messages.append(msg)\n"
+            steps += f"                step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"live\": True}})\n"
+            steps += "            else:\n"
+            steps += "                msg = {\"role\": \"assistant\", \"content\": _live_text}\n"
+            steps += "                messages.append(msg)\n"
+            steps += f"                step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"live\": True, \"text\": _live_text}})\n"
+            steps += "        else:\n"
             if tcs:
                 names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs)
                 jtcs = json.dumps(tcs, indent=2, ensure_ascii=False)
                 jnames = json.dumps(names, ensure_ascii=False)
-                steps += f"        # Model requested tool calls: {names}\n"
-                steps += f"        msg = {{\"role\": \"assistant\", \"tool_calls\": {jtcs}}}\n"
-                steps += "        messages.append(msg)\n"
-                steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"tool_calls\": {jnames}}})\n"
+                steps += f"            # Model requested tool calls: {names}\n"
+                steps += f"            msg = {{\"role\": \"assistant\", \"tool_calls\": {jtcs}}}\n"
+                steps += "            messages.append(msg)\n"
+                steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"tool_calls\": {jnames}}})\n"
             else:
                 jtxt = json.dumps(txt, ensure_ascii=False)
-                steps += f"        msg = {{\"role\": \"assistant\", \"content\": {jtxt}}}\n"
-                steps += "        messages.append(msg)\n"
-                steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"text\": {jtxt}}})\n"
+                steps += f"            msg = {{\"role\": \"assistant\", \"content\": {jtxt}}}\n"
+                steps += "            messages.append(msg)\n"
+                steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"llm_call\", \"text\": {jtxt}}})\n"
             steps += "\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
@@ -213,12 +419,29 @@ def _build_replay_steps(events: list) -> str:
             jcontent = json.dumps(content, ensure_ascii=False)
             jtid = json.dumps(tid, ensure_ascii=False)
             jname = json.dumps(name, ensure_ascii=False)
-            dur_val = dur if dur else "null"
+            dur_val = dur if dur else "None"
             dur_comment = f"  # {dur}ms" if dur else ""
             steps += guard
             steps += f"        # Step {step_num}: Tool call: {name}{dur_comment}\n"
-            steps += f"        messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
-            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n\n"
+            steps += f"        _tool_args_{step_num} = {{}}\n"
+            steps += f"        _tool_default_{step_num} = {jcontent}\n"
+            steps += f"        _sub_args_{step_num} = _tool_args_{step_num}\n"
+            steps += "        if SUBSTITUTE_TOOL:\n"
+            steps += "            try:\n"
+            steps += f"                _sub_step_{step_num}, _sub_json_{step_num} = SUBSTITUTE_TOOL.split(\" \", 1)\n"
+            steps += f"                if int(_sub_step_{step_num}) == {step_num}:\n"
+            steps += f"                    _sub_args_{step_num} = json.loads(_sub_json_{step_num})\n"
+            steps += "            except Exception:\n"
+            steps += "                pass\n"
+            steps += f"        if {jname} in DESTRUCTIVE_TOOLS and not ALLOW_DESTRUCTIVE:\n"
+            steps += f"            print(f\"DRY-RUN skipped destructive tool: {name}\")\n"
+            steps += f"            messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
+            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"skipped\": True}})\n"
+            steps += "        else:\n"
+            steps += f"            _result_{step_num} = dispatch_tool({jname}, _sub_args_{step_num}, _tool_default_{step_num}, step={step_num})\n"
+            steps += f"            messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": _result_{step_num}, \"name\": {jname}}})\n"
+            steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"name\": {jname}, \"duration_ms\": {dur_val}}})\n"
+            steps += "\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
             steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
@@ -286,6 +509,21 @@ def _build_replay_steps(events: list) -> str:
             ht = str(bool(thinking) or False)
             ds = dur_ms if dur_ms else "null"
             steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"post_api_request\", \"finish_reason\": {jfr}, \"api_duration_ms\": {ds}, \"has_thinking\": {ht}}})\n\n"
+            steps += "        _t1 = time.perf_counter()\n"
+            steps += "        _rd = round((_t1 - _t0) * 1000)\n"
+            steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
+            steps += f"        _tl = TIMELINE[{step_num}] if {step_num} < len(TIMELINE) else {{}}\n"
+            steps += "        _oo = _tl.get(\"offset_ms\", 0) or 0\n"
+            steps += "        _od = _tl.get(\"duration_ms\")\n"
+            steps += "        _kk = _tl.get(\"kind\", \"\")\n"
+            steps += "        step_log[-1][\"replay_duration_ms\"] = _rd\n"
+            steps += f"        timing_log.append({{\"step\": {step_num}, \"kind\": _kk, \"original_offset_ms\": _oo, \"replay_offset_ms\": _ro, \"delta_ms\": _ro - _oo, \"duration_ms\": _od, \"replay_duration_ms\": _rd}})\n"
+            step_num += 1
+        elif event.kind == "tool_schemas":
+            tcount = event.data.get("tool_count", 0) or 0
+            steps += guard
+            steps += f"        # Step {step_num}: Tool schemas ({tcount} tools)\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"tool_schemas\", \"tool_count\": {tcount}}})\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
             steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
@@ -400,6 +638,7 @@ def _build_program_text(
     system_prompt: str,
     final_response: str,
     started_at: float = 0,
+    cost_usd: float = 0.0,
 ) -> str:
     nl = count_llm_calls(events)
     tc = count_tool_calls(events)
@@ -422,11 +661,26 @@ def _build_program_text(
     jrb = json.dumps(rb, indent=2, ensure_ascii=False) if rb else "[]"
     cache = _build_response_cache(events)
     jcache = json.dumps(cache, indent=2)
+    schemas = _build_tool_schemas(events)
+    jschemas = json.dumps(schemas, indent=2)
+    provcfg = _build_provider_config(model, provider)
+    jprov = json.dumps(provcfg, indent=2)
+    graph = _build_state_graph(events, started_at)
+    jgraph = json.dumps(graph, indent=2, ensure_ascii=False)
+    cost = {
+        "model": model,
+        "cost_usd": float(cost_usd),
+        "input_tokens": usage.get("total_input_tokens", 0),
+        "output_tokens": usage.get("total_output_tokens", 0),
+    }
+    jcost = json.dumps(cost, indent=2)
+    cost_str = f"${float(cost_usd):.4f} USD ({model})" if model else f"${float(cost_usd):.4f} USD"
 
     # The replay func, parse_args func, and human_duration func
     replay_func = _make_replay_function(replay_steps)
     parse_args_func = _make_parse_args_function()
     human_dur_func = _make_human_duration_function()
+    live_helper = _make_live_helper()
 
     # Read template and substitute
     template_path = Path(__file__).resolve().parent / "templates" / "replay_template.py.txt"
@@ -454,9 +708,15 @@ def _build_program_text(
         JUSAGE=jusage,
         JRB=jrb,
         JCACHE=jcache,
+        JGRAPH=jgraph,
+        JCOST=jcost,
+        COST_STR=cost_str,
         REPLAY_FUNC=replay_func,
         PARSE_ARGS_FUNC=parse_args_func,
         HUMAN_DUR_FUNC=human_dur_func,
+        TOOL_SCHEMAS_JSON=jschemas,
+        PROVIDER_JSON=jprov,
+        LIVE_HELPER=live_helper,
     )
 
 
@@ -537,6 +797,7 @@ def _make_replay_function(replay_steps_body: str) -> str:
         "reasoning_blocks": REASONING_BLOCKS,
         "timing_log": timing_log,
         "response_cache": RESPONSE_CACHE,
+        "state_graph": STATE_GRAPH,
     }}
     return result'''
 
@@ -561,6 +822,11 @@ def _make_parse_args_function() -> str:
                         help="Compare with another trace.py file")
     parser.add_argument("--edit", type=str, default=None,
                         help="Counterfactual: change prompt and re-execute")
+    parser.add_argument("--engine", type=str, default="openai",
+                        choices=["openai", "pydantic"],
+                        help="Live engine: openai SDK (default) or pydantic")
+    parser.add_argument("--allow-destructive", action="store_true",
+                        help="Allow destructive tools to run (default: dry-run skip)")
     return parser.parse_args()'''
 
 
