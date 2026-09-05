@@ -45,4 +45,4 @@ def test_session_start_assigns_tags(monkeypatch):
     monkeypatch.setenv("UNROLL_SESSION_TAGS", "team-a")
     plugin = _load_plugin()
     plugin._on_session_start(session_id="s", model="m", platform="p")
-    assert plugin._recorder.session.tags == ["team-a"]
+    assert plugin._get_session("s").recorder.session.tags == ["team-a"]

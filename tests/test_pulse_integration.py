@@ -27,17 +27,12 @@ def _make_recorder_with_events(mod, tmp_path, monkeypatch):
     """Point traces dir at tmp HERMES_HOME and seed a recorder with events."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("UNROLL_PULSE_AUTO_SCORE", "true")
-    from tracer import TraceRecorder
-
-    rec = TraceRecorder()
+    mod._on_session_start(session_id="pulse-test-session", model="m", platform="p")
+    rec = mod._get_session("pulse-test-session").recorder
     rec.session.system_prompt = "sys"
     rec.session.initial_user_message = "hi"
     rec.record("user_message", {"text": "hi"})
     rec.record("llm_call", {"response_text": "hello", "response_tool_calls": []})
-    mod._recorder = rec
-    mod._session_id = "pulse-test-session"
-    mod._model = "m"
-    mod._provider = "p"
     return rec
 
 

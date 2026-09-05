@@ -21,14 +21,8 @@ def _load_plugin():
 
 
 def _fresh_session(mod, session_id="s-tool-1"):
-    from tracer import TraceRecorder
-
-    rec = TraceRecorder()
-    mod._recorder = rec
-    mod._session_id = session_id
-    mod._model = "gpt-4o"
-    mod._provider = "openai"
-    return rec
+    mod._on_session_start(session_id=session_id, model="gpt-4o", platform="openai")
+    return mod._get_session(session_id).recorder
 
 
 def _pre_kwargs(tools=None, **extra):
@@ -59,12 +53,12 @@ def test_first_call_records_tool_schemas_event():
     _fresh_session(mod)
     tools = [{"type": "function", "function": {"name": "read"}}]
     mod._on_pre_api_request(**_pre_kwargs(tools=tools))
-    kinds = [e.kind for e in mod._recorder.session.events]
+    kinds = [e.kind for e in mod._get_session("s-tool-1").recorder.session.events]
     assert "tool_schemas" in kinds
-    evt = next(e for e in mod._recorder.session.events if e.kind == "tool_schemas")
+    evt = next(e for e in mod._get_session("s-tool-1").recorder.session.events if e.kind == "tool_schemas")
     assert evt.data["tools"] == tools
     assert evt.data["tool_count"] == 1
-    pc = mod._recorder.session.provider_config
+    pc = mod._get_session("s-tool-1").recorder.session.provider_config
     assert pc["provider"] == "openai"
     assert pc["base_url"] == "https://api.openai.com/v1"
     assert pc["api_mode"] == "responses"
@@ -78,7 +72,7 @@ def test_second_call_does_not_duplicate():
     mod._on_pre_api_request(
         **_pre_kwargs(tools=[{"type": "other"}], api_call_count=2)
     )
-    schemas = [e for e in mod._recorder.session.events if e.kind == "tool_schemas"]
+    schemas = [e for e in mod._get_session("s-tool-1").recorder.session.events if e.kind == "tool_schemas"]
     assert len(schemas) == 1
 
 
@@ -88,6 +82,6 @@ def test_missing_request_key_handled_fail_open():
     kw = _pre_kwargs(tools=[{"type": "function"}])
     del kw["request"]
     mod._on_pre_api_request(**kw)  # must not raise
-    schemas = [e for e in mod._recorder.session.events if e.kind == "tool_schemas"]
+    schemas = [e for e in mod._get_session("s-tool-1").recorder.session.events if e.kind == "tool_schemas"]
     assert len(schemas) == 1
     assert schemas[0].data["tools"] == []

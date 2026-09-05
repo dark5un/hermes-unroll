@@ -23,6 +23,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Session state is keyed by session id: new `SessionContext` dataclass
+  (`recorder`, `model`, `provider`, `first_turn`, `finalized`) in
+  `_sessions` dict guarded by `threading.RLock`. Every hook resolves its
+  context from its own session argument; unknown sessions are a no-op with
+  a debug log, never a fallback. Subagent events belong to the parent
+  session. Deletes the process-global `_recorder`/`_session_id`/`_model`/
+  `_provider`/`_first_turn` that mixed concurrent sessions' events.
+
 ### Added
 
 - Session tags (C2-a capture side): `UNROLL_SESSION_TAGS="team-a,feat-x"`

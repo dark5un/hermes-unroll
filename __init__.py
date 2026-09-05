@@ -6,22 +6,47 @@ Phase 1: 5 hooks (on_session_start, post_llm_call, post_tool_call,
 Phase 2: +7 hooks (pre_api_request, post_api_request, api_request_error,
                    subagent_start, subagent_stop, on_stream_delta,
                    pre_tool_call)
+
+Session state is keyed by session id: every hook resolves its own
+``SessionContext`` from its session argument. A hook for an unknown
+session is a no-op with a debug log — never a fallback to whichever
+session happens to exist. Subagent events belong to the parent session.
 """
 
 import json
 import logging
 import os
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("hermes-unroll")
 
-# Module-level recorder; one per active session.
-_recorder = None
-_session_id = ""
-_model = ""
-_provider = ""
-_first_turn = False
+
+@dataclass
+class SessionContext:
+    """Per-session plugin state. One per active Hermes session."""
+
+    session_id: str
+    recorder: Any = None
+    model: str = ""
+    provider: str = ""
+    first_turn: bool = True
+    finalized: bool = False
+
+
+_sessions: dict[str, SessionContext] = {}
+_sessions_lock = threading.RLock()
+
+
+def _get_session(session_id: str | None) -> SessionContext | None:
+    """Resolve the context for a session id. None when unknown."""
+    if not session_id:
+        return None
+    with _sessions_lock:
+        return _sessions.get(session_id)
 
 
 def _resolve_traces_dir() -> Path:
@@ -45,31 +70,33 @@ def _on_post_llm_call(
     **kwargs,
 ):
     """Hook: fires after each successful LLM call turn."""
-    global _first_turn
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: post_llm_call for unknown session %r — dropping", session_id)
         return
+    recorder = ctx.recorder
 
-    if _first_turn:
-        _first_turn = False
-        _recorder.set_metadata(
+    if ctx.first_turn:
+        ctx.first_turn = False
+        recorder.set_metadata(
             session_id=session_id,
             model=model,
             provider=platform,
         )
 
         for msg in conversation_history:
-            if msg.get("role") == "system" and not _recorder.session.system_prompt:
-                _recorder.session.system_prompt = msg.get("content", "")
-                _recorder.record("system_prompt", {"text": msg.get("content", "")})
-            if msg.get("role") == "user" and not _recorder.session.initial_user_message:
-                _recorder.session.initial_user_message = msg.get("content", "")
-                _recorder.record("user_message", {"text": msg.get("content", "")})
-            if _recorder.session.system_prompt and _recorder.session.initial_user_message:
+            if msg.get("role") == "system" and not recorder.session.system_prompt:
+                recorder.session.system_prompt = msg.get("content", "")
+                recorder.record("system_prompt", {"text": msg.get("content", "")})
+            if msg.get("role") == "user" and not recorder.session.initial_user_message:
+                recorder.session.initial_user_message = msg.get("content", "")
+                recorder.record("user_message", {"text": msg.get("content", "")})
+            if recorder.session.system_prompt and recorder.session.initial_user_message:
                 break
 
     for msg in reversed(conversation_history):
         if msg.get("role") == "user":
-            _recorder.record("user_message", {"text": msg.get("content", "")})
+            recorder.record("user_message", {"text": msg.get("content", "")})
             break
 
     tool_calls = []
@@ -78,7 +105,7 @@ def _on_post_llm_call(
             tool_calls = msg.get("tool_calls", [])
             break
 
-    _recorder.record("llm_call", {
+    recorder.record("llm_call", {
         "response_text": assistant_response,
         "response_tool_calls": tool_calls or [],
         "model": model,
@@ -94,11 +121,19 @@ def _on_post_tool_call(
     duration_ms: int,
     **kwargs,
 ):
-    """Hook: fires after each tool returns."""
-    if _recorder is None:
+    """Hook: fires after each tool returns.
+
+    Hermes passes ``session_id`` (plus ``turn_id``, ``tool_call_id``,
+    ``status``, ``error_type``, ``middleware_trace``) as kwargs — see
+    the hook payload table. Route strictly by it.
+    """
+    session_id = kwargs.get("session_id") or ""
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: post_tool_call for unknown session %r — dropping", session_id)
         return
 
-    _recorder.record("tool_call", {
+    ctx.recorder.record("tool_call", {
         "name": tool_name,
         "args": args,
         "content": result,
@@ -109,20 +144,22 @@ def _on_post_tool_call(
 
 def _generate_trace(session_id: str, completed: bool = True):
     """Generate the trace file from ALL accumulated events so far."""
-    global _session_id
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: _generate_trace for unknown session %r — dropping", session_id)
         return
+    recorder = ctx.recorder
 
     from generator import generate_trace_program
 
-    _recorder.session.completed = completed
-    _recorder.session.final_response = (
-        _recorder.session.events[-1].data.get("response_text", "")
-        if _recorder.session.events and _recorder.session.events[-1].kind == "llm_call"
+    recorder.session.completed = completed
+    recorder.session.final_response = (
+        recorder.session.events[-1].data.get("response_text", "")
+        if recorder.session.events and recorder.session.events[-1].kind == "llm_call"
         else ""
     )
 
-    events = _recorder.finalize()
+    events = recorder.finalize()
     if not events:
         return
 
@@ -152,7 +189,7 @@ def _generate_trace(session_id: str, completed: bool = True):
                 _u = _e.data.get("usage", {}) or {}
                 _tin += _u.get("input_tokens", 0) or 0
                 _tout += _u.get("output_tokens", 0) or 0
-        cost_usd = estimate_cost(_model or _recorder.session.model, _tin, _tout)
+        cost_usd = estimate_cost(ctx.model or recorder.session.model, _tin, _tout)
     except Exception:  # noqa: BLE001
         cost_usd = 0.0
 
@@ -161,18 +198,18 @@ def _generate_trace(session_id: str, completed: bool = True):
         traces_dir.mkdir(parents=True, exist_ok=True)
         program_path = generate_trace_program(
             events,
-            session_id=session_id or _session_id,
-            model=_model,
-            provider=_provider,
-            system_prompt=_recorder.session.system_prompt,
-            user_message=_recorder.session.initial_user_message,
-            final_response=_recorder.session.final_response,
-            started_at=_recorder.session.started_at,
+            session_id=session_id or ctx.session_id,
+            model=ctx.model,
+            provider=ctx.provider,
+            system_prompt=recorder.session.system_prompt,
+            user_message=recorder.session.initial_user_message,
+            final_response=recorder.session.final_response,
+            started_at=recorder.session.started_at,
             cost_usd=cost_usd,
             active_skills=list(
-                getattr(_recorder.session, "active_skills", None) or []
+                getattr(recorder.session, "active_skills", None) or []
             ),
-            tags=list(getattr(_recorder.session, "tags", None) or []),
+            tags=list(getattr(recorder.session, "tags", None) or []),
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
         # Guarded Pulse auto-score (G5 init-part): opt-in via
@@ -227,8 +264,6 @@ def _generate_trace(session_id: str, completed: bool = True):
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
 
-    _session_id = session_id or _session_id
-
 
 def _session_tags_from_env() -> list[str]:
     """Read session tags from env. UNROLL_ prefix wins, HERMES_ is legacy fallback."""
@@ -245,15 +280,19 @@ def _on_session_start(
     **kwargs,
 ):
     """Hook: fires when a new session is created."""
-    global _recorder, _session_id, _model, _provider, _first_turn
     from tracer import TraceRecorder
 
-    _recorder = TraceRecorder()
-    _recorder.session.tags = _session_tags_from_env()
-    _session_id = session_id
-    _model = model
-    _provider = platform
-    _first_turn = True
+    recorder = TraceRecorder()
+    recorder.session.tags = _session_tags_from_env()
+    ctx = SessionContext(
+        session_id=session_id,
+        recorder=recorder,
+        model=model,
+        provider=platform,
+        first_turn=True,
+    )
+    with _sessions_lock:
+        _sessions[session_id] = ctx
 
 
 def _on_session_end(
@@ -274,8 +313,9 @@ def _on_session_finalize(
     **kwargs,
 ):
     """Hook: fires when CLI/gateway tears down an active session."""
-    if _recorder is not None and _recorder.session.events:
-        _generate_trace(session_id or _session_id)
+    ctx = _get_session(session_id)
+    if ctx is not None and ctx.recorder.session.events:
+        _generate_trace(session_id or ctx.session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +341,13 @@ def _on_pre_api_request(
 
     Captures the request payload as sent to the provider.
     """
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: pre_api_request for unknown session %r — dropping", session_id)
         return
+    recorder = ctx.recorder
 
-    _recorder.record("pre_api_request", {
+    recorder.record("pre_api_request", {
         "model": model,
         "provider": provider,
         "request_messages": request_messages,
@@ -321,20 +364,20 @@ def _on_pre_api_request(
     try:
         request = kwargs.get("request") or {}
         system_prompt = kwargs.get("system_prompt") or ""
-        if system_prompt and not _recorder.session.system_prompt:
-            _recorder.session.system_prompt = system_prompt
-        already = any(e.kind == "tool_schemas" for e in _recorder.session.events)
+        if system_prompt and not recorder.session.system_prompt:
+            recorder.session.system_prompt = system_prompt
+        already = any(e.kind == "tool_schemas" for e in recorder.session.events)
         if not already:
             body = request.get("body") or {} if isinstance(request, dict) else {}
             tools = body.get("tools") or [] if isinstance(body, dict) else []
-            _recorder.session.tool_schemas = list(tools)
-            _recorder.session.provider_config = {
+            recorder.session.tool_schemas = list(tools)
+            recorder.session.provider_config = {
                 "provider": provider,
                 "base_url": kwargs.get("base_url", ""),
                 "api_mode": kwargs.get("api_mode", ""),
                 "model": model,
             }
-            _recorder.record("tool_schemas", {
+            recorder.record("tool_schemas", {
                 "tools": list(tools),
                 "tool_count": tool_count,
             })
@@ -361,8 +404,11 @@ def _on_post_api_request(
     Captures raw response, usage metrics, finish reason, and duration.
     Extracts thinking/reasoning blocks from the assistant message.
     """
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: post_api_request for unknown session %r — dropping", session_id)
         return
+    recorder = ctx.recorder
 
     # Extract reasoning/thinking content from the assistant message
     thinking_content = None
@@ -373,7 +419,7 @@ def _on_post_api_request(
             assistant_message, "reasoning_content", None
         ) or ""
 
-    _recorder.record("post_api_request", {
+    recorder.record("post_api_request", {
         "model": model,
         "provider": provider,
         "api_duration_ms": int(api_duration * 1000) if api_duration else None,
@@ -388,9 +434,9 @@ def _on_post_api_request(
 
     # Update session-level token accounting
     if usage:
-        _recorder.session.total_api_calls += 1
-        _recorder.session.total_tokens_in += usage.get("input_tokens", 0) or 0
-        _recorder.session.total_tokens_out += usage.get("output_tokens", 0) or 0
+        recorder.session.total_api_calls += 1
+        recorder.session.total_tokens_in += usage.get("input_tokens", 0) or 0
+        recorder.session.total_tokens_out += usage.get("output_tokens", 0) or 0
 
 
 def _on_api_request_error(
@@ -408,10 +454,12 @@ def _on_api_request_error(
     **kwargs,
 ):
     """Hook: fires when an API request fails."""
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: api_request_error for unknown session %r — dropping", session_id)
         return
 
-    _recorder.record("api_request_error", {
+    ctx.recorder.record("api_request_error", {
         "model": model,
         "provider": provider,
         "api_call_count": api_call_count,
@@ -435,10 +483,12 @@ def _on_stream_delta(
 
     Captures the raw streaming output for exact token reconstruction.
     """
-    if _recorder is None:
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: on_stream_delta for unknown session %r — dropping", session_id)
         return
 
-    _recorder.record("on_stream_delta", {
+    ctx.recorder.record("on_stream_delta", {
         "delta": delta,
         "kind": kind,
     })
@@ -452,11 +502,20 @@ def _on_subagent_start(
     child_goal: str | None,
     **kwargs,
 ):
-    """Hook: fires when a subagent is spawned."""
-    if _recorder is None:
+    """Hook: fires when a subagent is spawned.
+
+    Subagent events belong to the parent session — the child id never
+    gets its own context.
+    """
+    ctx = _get_session(parent_session_id)
+    if ctx is None:
+        logger.debug(
+            "hermes-unroll: subagent_start for unknown parent %r — dropping",
+            parent_session_id,
+        )
         return
 
-    _recorder.record("subagent_start", {
+    ctx.recorder.record("subagent_start", {
         "parent_session_id": parent_session_id,
         "child_session_id": child_session_id,
         "child_subagent_id": child_subagent_id,
@@ -472,11 +531,16 @@ def _on_subagent_stop(
     child_summary: str | None,
     **kwargs,
 ):
-    """Hook: fires when a subagent completes."""
-    if _recorder is None:
+    """Hook: fires when a subagent completes. Owned by the parent session."""
+    ctx = _get_session(parent_session_id)
+    if ctx is None:
+        logger.debug(
+            "hermes-unroll: subagent_stop for unknown parent %r — dropping",
+            parent_session_id,
+        )
         return
 
-    _recorder.record("subagent_stop", {
+    ctx.recorder.record("subagent_stop", {
         "parent_session_id": parent_session_id,
         "child_session_id": child_session_id,
         "child_role": child_role,
@@ -493,12 +557,17 @@ def _on_pre_tool_call(
     """Hook: fires before a tool executes.
 
     Captures the tool name and arguments before execution for guardrail
-    interception records.
+    interception records. Routes by the ``session_id`` Hermes passes in
+    kwargs; unknown sessions are dropped, never guessed.
     """
-    if _recorder is None:
+    session_id = kwargs.get("session_id") or ""
+    ctx = _get_session(session_id)
+    if ctx is None:
+        logger.debug("hermes-unroll: pre_tool_call for unknown session %r — dropping", session_id)
         return
+    recorder = ctx.recorder
 
-    _recorder.record("pre_tool_call", {
+    recorder.record("pre_tool_call", {
         "name": tool_name,
         "args": args,
         "task_id": task_id,
@@ -512,13 +581,13 @@ def _on_pre_tool_call(
             name = a.get("name")
             file_path = a.get("file_path", "")
             if name and isinstance(name, str):
-                skills = getattr(_recorder.session, "active_skills", None)
+                skills = getattr(recorder.session, "active_skills", None)
                 if not isinstance(skills, list):
                     skills = []
-                    _recorder.session.active_skills = skills
+                    recorder.session.active_skills = skills
                 if name not in skills:
                     skills.append(name)
-                _recorder.record("skill_view", {
+                recorder.record("skill_view", {
                     "name": name,
                     "file_path": file_path or "",
                 })

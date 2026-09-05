@@ -20,15 +20,9 @@ def _load_plugin():
 
 
 def _fresh_session(mod, monkeypatch, tmp_path, session_id="s2-test"):
-    from tracer import TraceRecorder
-
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    rec = TraceRecorder()
-    mod._recorder = rec
-    mod._session_id = session_id
-    mod._model = "m"
-    mod._provider = "p"
-    return rec
+    mod._on_session_start(session_id=session_id, model="m", platform="p")
+    return mod._get_session(session_id).recorder
 
 
 def test_pre_tool_call_skill_view_records_event_and_session_list(
@@ -37,7 +31,7 @@ def test_pre_tool_call_skill_view_records_event_and_session_list(
     mod = _load_plugin()
     rec = _fresh_session(mod, monkeypatch, tmp_path)
     mod._on_pre_tool_call(
-        tool_name="skill_view", args={"name": "my-skill"}, task_id="t1"
+        tool_name="skill_view", args={"name": "my-skill"}, task_id="t1", session_id="s2-test"
     )
     kinds = [e.kind for e in rec.session.events]
     assert "skill_view" in kinds
@@ -50,10 +44,10 @@ def test_skill_view_dedupe_on_repeat(monkeypatch, tmp_path):
     mod = _load_plugin()
     rec = _fresh_session(mod, monkeypatch, tmp_path)
     mod._on_pre_tool_call(
-        tool_name="skill_view", args={"name": "my-skill"}, task_id="t1"
+        tool_name="skill_view", args={"name": "my-skill"}, task_id="t1", session_id="s2-test"
     )
     mod._on_pre_tool_call(
-        tool_name="skill_view", args={"name": "my-skill"}, task_id="t2"
+        tool_name="skill_view", args={"name": "my-skill"}, task_id="t2", session_id="s2-test"
     )
     assert rec.session.active_skills == ["my-skill"]
 
@@ -62,7 +56,7 @@ def test_non_skill_tools_unaffected(monkeypatch, tmp_path):
     mod = _load_plugin()
     rec = _fresh_session(mod, monkeypatch, tmp_path)
     mod._on_pre_tool_call(
-        tool_name="terminal", args={"command": "ls"}, task_id="t1"
+        tool_name="terminal", args={"command": "ls"}, task_id="t1", session_id="s2-test"
     )
     assert rec.session.active_skills == []
     kinds = [e.kind for e in rec.session.events]

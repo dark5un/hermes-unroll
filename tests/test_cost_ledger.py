@@ -46,18 +46,13 @@ def test_generate_trace_computes_cost_from_usage(tmp_path, monkeypatch):
 
     mod = _load_plugin("unroll_plugin_cost_e2e")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tracer import TraceRecorder
-
-    rec = TraceRecorder()
+    mod._on_session_start(session_id="cost-e2e", model="gpt-4o", platform="openai")
+    rec = mod._get_session("cost-e2e").recorder
     rec.session.system_prompt = "sys"
     rec.session.initial_user_message = "hi"
     rec.record("user_message", {"text": "hi"})
     rec.record("post_api_request", {"usage": {"input_tokens": 1000, "output_tokens": 2000}})
     rec.record("post_api_request", {"usage": {"input_tokens": 500, "output_tokens": 500}})
-    mod._recorder = rec
-    mod._session_id = "cost-e2e"
-    mod._model = "gpt-4o"
-    mod._provider = "openai"
     mod._generate_trace("cost-e2e")
     traces = list((tmp_path / "traces" / "unrolled").glob("*.py"))
     assert traces, "trace program should be written"
