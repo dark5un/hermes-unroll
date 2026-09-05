@@ -4,6 +4,23 @@ All notable changes to hermes-unroll are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-05
+
+### Added
+
+- Session tags (C2-a capture side): `UNROLL_SESSION_TAGS="team-a,feat-x"`
+  (comma-separated; `HERMES_SESSION_TAGS` read as legacy fallback) captured
+  at session start onto `TraceSession.tags` and emitted as a `SESSION_TAGS`
+  constant in every generated trace. Downstream: Pulse sidecars carry
+  `session_tags` and `pulse costs --group-by tag` attributes cost with no
+  registry CSV. Empty/unset → `[]`; never breaks traces.
+
+### Fixed
+
+- Session-tags tests load the plugin via importlib spec (unique module name),
+  matching the other spec-loading test files — `tests/__init__.py` was
+  shadowing the plugin root's `__init__.py` under full-suite runs.
+
 ## [Unreleased]
 
 ### Added
