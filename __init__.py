@@ -39,6 +39,7 @@ def _on_post_llm_call(
     if _recorder is None:
         return
 
+    # First turn — capture system prompt, user message, and metadata
     if _first_turn:
         _first_turn = False
         _recorder.set_metadata(
@@ -57,6 +58,13 @@ def _on_post_llm_call(
             if _recorder.session.system_prompt and _recorder.session.initial_user_message:
                 break
 
+    # Every turn — record the current user message
+    for msg in reversed(conversation_history):
+        if msg.get("role") == "user":
+            _recorder.record("user_message", {"text": msg.get("content", "")})
+            break
+
+    # Record tool calls from the assistant response
     tool_calls = []
     for msg in reversed(conversation_history):
         if msg.get("role") == "assistant":
@@ -93,12 +101,11 @@ def _on_post_tool_call(
 
 
 def _generate_trace(session_id: str, completed: bool = True):
-    """Generate the trace file from accumulated events."""
-    global _recorder, _session_id
+    """Generate the trace file from current events, then clear for next turn."""
+    global _session_id
     if _recorder is None:
         return
 
-    # Lazy import to keep __init__.py importable without sibling modules
     from generator import generate_trace_program
 
     _recorder.session.completed = completed
@@ -110,8 +117,6 @@ def _generate_trace(session_id: str, completed: bool = True):
 
     events = _recorder.finalize()
     if not events:
-        _recorder = None
-        _session_id = ""
         return
 
     traces_dir = _resolve_traces_dir()
@@ -130,9 +135,9 @@ def _generate_trace(session_id: str, completed: bool = True):
     except BaseException as exc:  # noqa: BLE001
         logger.error("hermes-unroll: failed to generate trace: %s", exc)
 
-    _recorder = None
-    _session_id = ""
-    _first_turn = False
+    # Reset events for the next turn, but keep recorder alive
+    _recorder.session.events = []
+    _session_id = session_id or _session_id
 
 
 def _on_session_start(
