@@ -12,6 +12,7 @@ Flags:
   python {file} --substitute-tool=N '{"args": ...}'
   python {file} --show-state  Print state after each step node
   python {file} --diff other.py  Compare with another trace
+  python {file} --diff other.py --html report.html  Write HTML diff report
   python {file} --edit '...'  Counterfactual: edit + re-execute
   python {file} --engine=openai   Live engine: openai (default) or pydantic
   python {file} --allow-destructive  Allow destructive tools to run
@@ -52,6 +53,7 @@ STATE_GRAPH = $JGRAPH
 DEPENDENCIES = $JDEPS
 TOOL_SCHEMAS = $TOOL_SCHEMAS_JSON
 PROVIDER_CONFIG = $PROVIDER_JSON
+ACTIVE_SKILLS = $ACTIVE_SKILLS_JSON
 LIVE = False
 ENGINE = "openai"
 SUBSTITUTE_TOOL = None
@@ -73,6 +75,9 @@ def dispatch_tool(name, args, default=None, step=None):
         if isinstance(_entry, dict) and "result" in _entry:
             return _entry["result"]
     return default
+
+
+$DIFF_HTML_HELPER
 
 
 def _load_other_timeline(path):
@@ -234,6 +239,19 @@ if __name__ == "__main__":
                 t = their_kinds[i] if i < len(their_kinds) else ("", "")
                 if o != t:
                     print(f"  Step {i}: ours {o[0]}@{o[1]}ms vs theirs {t[0]}@{t[1]}ms")
+        if args.html:
+            try:
+                _html_text = _render_diff_html(TIMELINE, other_timeline or [])
+            except Exception as _he:
+                print(f"Error rendering HTML diff: {_he}")
+                sys.exit(1)
+            try:
+                with open(args.html, "w", encoding="utf-8") as _hf:
+                    _hf.write(_html_text)
+            except Exception as _he:
+                print(f"Error writing HTML diff: {_he}")
+                sys.exit(1)
+            print("HTML diff written to " + str(args.html))
         sys.exit(0)
     if args.edit:
         try:

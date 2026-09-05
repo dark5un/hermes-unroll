@@ -33,6 +33,7 @@ class TraceSession:
     total_tokens_out: int = 0
     tool_schemas: list = field(default_factory=list)
     provider_config: dict = field(default_factory=dict)
+    active_skills: list = field(default_factory=list)
 
 
 class TraceRecorder:

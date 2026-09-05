@@ -33,6 +33,7 @@ def generate_trace_program(
     final_response: str = "",
     started_at: float = 0,
     cost_usd: float = 0.0,
+    active_skills: list | None = None,
 ) -> str:
     """Compile events into a Hermes-independent replay program."""
     traces_dir = _get_traces_dir()
@@ -43,6 +44,7 @@ def generate_trace_program(
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     messages = reconstruct_messages(events)
     tl = _build_timeline(events, started_at)
+    skills = _build_active_skills(events, active_skills)
 
     code = _build_program_text(
         session_id=session_id,
@@ -56,6 +58,7 @@ def generate_trace_program(
         final_response=final_response,
         started_at=started_at,
         cost_usd=cost_usd,
+        active_skills=skills,
     )
 
     filepath.write_text(code, encoding="utf-8")
@@ -387,6 +390,30 @@ def _build_provider_config(model: str, provider: str) -> dict:
     }
 
 
+def _build_active_skills(events: list, active_skills: list | None = None) -> list[str]:
+    """Build the ACTIVE_SKILLS list (S2, ordered-unique).
+
+    Prefers the explicit session-level list; falls back to deriving
+    from skill_view events so older traces still emit the constant.
+    Accepts dict or attribute events.
+    """
+    seen: list[str] = []
+    for s in active_skills or []:
+        if s and isinstance(s, str) and s not in seen:
+            seen.append(s)
+    for e in events:
+        kind = e.get("kind") if isinstance(e, dict) else getattr(e, "kind", None)
+        if kind != "skill_view":
+            continue
+        data = e.get("data", {}) if isinstance(e, dict) else getattr(e, "data", {})
+        if not isinstance(data, dict):
+            continue
+        name = data.get("name")
+        if name and isinstance(name, str) and name not in seen:
+            seen.append(name)
+    return seen
+
+
 def _build_replay_steps(events: list) -> str:
     """Build step-by-step execution code for all 12 event kinds with range guard."""
     steps = ""
@@ -694,6 +721,7 @@ def _build_program_text(
     final_response: str,
     started_at: float = 0,
     cost_usd: float = 0.0,
+    active_skills: list | None = None,
 ) -> str:
     nl = count_llm_calls(events)
     tc = count_tool_calls(events)
@@ -720,6 +748,9 @@ def _build_program_text(
     jschemas = json.dumps(schemas, indent=2)
     provcfg = _build_provider_config(model, provider)
     jprov = json.dumps(provcfg, indent=2)
+    jactive = json.dumps(
+        _build_active_skills(events, active_skills), ensure_ascii=False
+    )
     graph = _build_state_graph(events, started_at)
     jgraph = json.dumps(graph, indent=2, ensure_ascii=False)
     depmap = _build_dependency_map(events)
@@ -740,6 +771,7 @@ def _build_program_text(
     parse_args_func = _make_parse_args_function()
     human_dur_func = _make_human_duration_function()
     live_helper = _make_live_helper()
+    diff_html_helper = _make_diff_html_helper()
 
     # Read template and substitute
     template_path = Path(__file__).resolve().parent / "templates" / "replay_template.py.txt"
@@ -776,7 +808,9 @@ def _build_program_text(
         HUMAN_DUR_FUNC=human_dur_func,
         TOOL_SCHEMAS_JSON=jschemas,
         PROVIDER_JSON=jprov,
+        ACTIVE_SKILLS_JSON=jactive,
         LIVE_HELPER=live_helper,
+        DIFF_HTML_HELPER=diff_html_helper,
     )
 
 
@@ -882,6 +916,8 @@ def _make_parse_args_function() -> str:
                         help="Print full agent state after each step")
     parser.add_argument("--diff", type=str, default=None,
                         help="Compare with another trace.py file")
+    parser.add_argument("--html", type=str, default=None,
+                        help="Writing path for HTML diff report (requires --diff)")
     parser.add_argument("--edit", type=str, default=None,
                         help="Counterfactual: change prompt and re-execute")
     parser.add_argument("--engine", type=str, default="openai",
@@ -890,6 +926,127 @@ def _make_parse_args_function() -> str:
     parser.add_argument("--allow-destructive", action="store_true",
                         help="Allow destructive tools to run (default: dry-run skip)")
     return parser.parse_args()'''
+
+
+def _make_diff_html_helper() -> str:
+    """Build the inline _render_diff_html() source for the generated program.
+
+    Mirrors diff.py render_html_diff logic (index-aligned rows classified as
+    added/removed/changed/unchanged, inline CSS, timing delta column,
+    HTML-escaped) but operates on the generated file's TIMELINE lists.
+    Self-contained: only stdlib html, imported locally. Contains no dollar
+    signs so it is safe for string.Template substitution.
+    """
+    return '''
+def _render_diff_html(ours, theirs):
+    """Render a self-contained HTML diff of two TIMELINE lists."""
+    import html as _html
+
+    def _summ(entry):
+        if isinstance(entry, dict):
+            kind = str(entry.get("kind", "?"))
+            rest = {k: v for k, v in entry.items() if k != "kind"}
+            if not rest:
+                return kind
+            items = ", ".join(f"{k}={v!r}" for k, v in sorted(rest.items()))
+            text = kind + "(" + items + ")"
+            return text if len(text) <= 300 else text[:297] + "..."
+        return str(entry)
+
+    def _off(entry):
+        if isinstance(entry, dict):
+            try:
+                return float(entry.get("offset_ms", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    ours = list(ours or [])
+    theirs = list(theirs or [])
+    n = max(len(ours), len(theirs))
+    rows = []
+    n_changed = n_added = n_removed = n_unchanged = 0
+    for i in range(n):
+        in_ours = i < len(ours)
+        in_theirs = i < len(theirs)
+        if in_ours and in_theirs:
+            same = ours[i] == theirs[i]
+            cls = "unchanged" if same else "changed"
+            left = _summ(ours[i])
+            right = _summ(theirs[i])
+            if same:
+                n_unchanged += 1
+            else:
+                n_changed += 1
+        elif in_theirs:
+            cls = "added"
+            left = "\\u2014"
+            right = _summ(theirs[i])
+            n_added += 1
+        else:
+            cls = "removed"
+            left = _summ(ours[i])
+            right = "\\u2014"
+            n_removed += 1
+        d_ours = _off(ours[i]) if in_ours else None
+        d_theirs = _off(theirs[i]) if in_theirs else None
+        if d_ours is not None and d_theirs is not None:
+            _delta = d_theirs - d_ours
+            _sign = "+" if _delta >= 0 else "-"
+            delta = _sign + str(round(abs(_delta))) + "ms"
+        else:
+            delta = "n/a"
+        rows.append(
+            "<tr class=\\"" + cls + "\\"><td class=\\"idx\\">" + str(i) + "</td>"
+            + "<td>" + _html.escape(left) + "</td>"
+            + "<td>" + _html.escape(right) + "</td>"
+            + "<td class=\\"delta\\">" + _html.escape(delta) + "</td></tr>"
+        )
+    if rows:
+        body_rows = "\\n".join(rows)
+    else:
+        body_rows = (
+            "<tr class=\\"unchanged\\"><td class=\\"idx\\">\\u2014</td>"
+            "<td>no steps</td><td>no steps</td>"
+            "<td class=\\"delta\\">n/a</td></tr>"
+        )
+    return (
+        "<!DOCTYPE html>\\n"
+        "<html lang=\\"en\\">\\n"
+        "<head>\\n"
+        "<meta charset=\\"utf-8\\">\\n"
+        "<meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\">\\n"
+        "<title>Trace diff</title>\\n"
+        "<style>\\n"
+        "body { font-family: system-ui, sans-serif; margin: 2rem; color: #111; }\\n"
+        "h1 { font-size: 1.25rem; }\\n"
+        ".summary { margin-bottom: 1rem; color: #444; }\\n"
+        "table.diff { border-collapse: collapse; width: 100%; }\\n"
+        "table.diff th, table.diff td { border: 1px solid #ccc; padding: 6px 10px; "
+        "text-align: left; vertical-align: top; font-size: 0.9rem; }\\n"
+        "table.diff th { background: #f0f0f0; }\\n"
+        "tr.unchanged { background: #ffffff; }\\n"
+        "tr.changed { background: #fff3cd; }\\n"
+        "tr.added { background: #d4edda; }\\n"
+        "tr.removed { background: #f8d7da; }\\n"
+        "td.idx { width: 3em; text-align: right; color: #666; }\\n"
+        "td.delta { white-space: nowrap; }\\n"
+        "</style>\\n"
+        "</head>\\n"
+        "<body>\\n"
+        "<h1>Trace diff</h1>\\n"
+        "<p class=\\"summary\\">steps: ours=" + str(len(ours))
+        + " theirs=" + str(len(theirs)) + " &mdash;\\n"
+        "changed=" + str(n_changed) + " added=" + str(n_added)
+        + " removed=" + str(n_removed) + " unchanged=" + str(n_unchanged) + "</p>\\n"
+        "<table class=\\"diff\\">\\n"
+        "<thead><tr><th>step</th><th>ours</th><th>theirs</th>"
+        "<th>&Delta; (theirs&minus;ours)</th></tr></thead>\\n"
+        "<tbody>\\n" + body_rows + "\\n</tbody>\\n"
+        "</table>\\n"
+        "</body>\\n"
+        "</html>"
+    )'''
 
 
 def _make_human_duration_function() -> str:

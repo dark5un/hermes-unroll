@@ -169,6 +169,9 @@ def _generate_trace(session_id: str, completed: bool = True):
             final_response=_recorder.session.final_response,
             started_at=_recorder.session.started_at,
             cost_usd=cost_usd,
+            active_skills=list(
+                getattr(_recorder.session, "active_skills", None) or []
+            ),
         )
         logger.info("hermes-unroll: trace written to %s", program_path)
         # Guarded Pulse auto-score (G5 init-part): opt-in via
@@ -490,6 +493,27 @@ def _on_pre_tool_call(
         "args": args,
         "task_id": task_id,
     })
+
+    # S2: ACTIVE_SKILLS capture — skill_view views mark a skill active.
+    # Fail-open: never let bookkeeping break the tool path.
+    try:
+        if tool_name == "skill_view":
+            a = args if isinstance(args, dict) else {}
+            name = a.get("name")
+            file_path = a.get("file_path", "")
+            if name and isinstance(name, str):
+                skills = getattr(_recorder.session, "active_skills", None)
+                if not isinstance(skills, list):
+                    skills = []
+                    _recorder.session.active_skills = skills
+                if name not in skills:
+                    skills.append(name)
+                _recorder.record("skill_view", {
+                    "name": name,
+                    "file_path": file_path or "",
+                })
+    except Exception:  # noqa: BLE001, S110
+        pass
 
 
 # ---------------------------------------------------------------------------
