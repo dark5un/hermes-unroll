@@ -8,6 +8,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Session tags (C2-a capture side): `UNROLL_SESSION_TAGS="team-a,feat-x"`
+  (comma-separated; `HERMES_SESSION_TAGS` read as legacy fallback) captured
+  at session start onto `TraceSession.tags` and emitted as a `SESSION_TAGS`
+  constant in every generated trace. Downstream: Pulse sidecars carry
+  `session_tags` and `pulse costs --group-by tag` attributes cost with no
+  registry CSV. Empty/unset → `[]`; never breaks traces.
+
 - Live replay prerequisites documented where users actually meet `--live`:
   generated trace docstring states the no-install urllib default plus
   `pip install openai` (SDK path) / `pip install pydantic-ai`
