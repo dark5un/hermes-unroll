@@ -126,7 +126,7 @@ class TestSubstituteAndDestructive:
     def test_replay_steps_reference_substitute_and_destructive(self):
         steps = _build_replay_steps(_sample_events())
         assert "substitute_tool" in steps or "SUBSTITUTE_TOOL" in steps
-        assert "DESTRUCTIVE_TOOLS" in steps
+        assert "_is_destructive" in steps
         assert "ALLOW_DESTRUCTIVE" in steps
 
 

@@ -491,8 +491,11 @@ def _build_replay_steps(events: list) -> str:
             jtxt = json.dumps(txt, ensure_ascii=False)
             steps += guard
             steps += f"        # Step {step_num}: User message\n"
-            steps += f"        messages.append({{\"role\": \"user\", \"content\": {jtxt}}})\n"
-            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"user_message\", \"text\": {jtxt}}})\n\n"
+            steps += f"        _umsg_{step_num} = {jtxt}\n"
+            steps += f"        if _edit_step == {step_num}:\n"
+            steps += f"            _umsg_{step_num} = _edit_text\n"
+            steps += f"        messages.append({{\"role\": \"user\", \"content\": _umsg_{step_num}}})\n"
+            steps += f"        step_log.append({{\"step\": {step_num}, \"kind\": \"user_message\", \"text\": _umsg_{step_num}}})\n\n"
             steps += "        _t1 = time.perf_counter()\n"
             steps += "        _rd = round((_t1 - _t0) * 1000)\n"
             steps += "        _ro = round((_t1 - _replay_start) * 1000)\n"
@@ -571,7 +574,7 @@ def _build_replay_steps(events: list) -> str:
             steps += f"                    _sub_args_{step_num} = json.loads(_sub_json_{step_num})\n"
             steps += "            except Exception:\n"
             steps += "                pass\n"
-            steps += f"        if {jname} in DESTRUCTIVE_TOOLS and not ALLOW_DESTRUCTIVE:\n"
+            steps += f"        if _is_destructive({jname}, _sub_args_{step_num}) and not ALLOW_DESTRUCTIVE:\n"
             steps += f"            print(f\"DRY-RUN skipped destructive tool: {name}\")\n"
             steps += f"            messages.append({{\"role\": \"tool\", \"tool_call_id\": {jtid}, \"content\": {jcontent}, \"name\": {jname}}})\n"
             steps += f"            step_log.append({{\"step\": {step_num}, \"kind\": \"tool_call\", \"event_id\": {jeid}, \"name\": {jname}, \"skipped\": True}})\n"
@@ -876,7 +879,7 @@ def _build_program_text(
 
 def _make_replay_function(replay_steps_body: str) -> str:
     """Build the replay() function source for the generated program."""
-    return f'''def replay(from_step=None, to_step=None):
+    return f'''def replay(from_step=None, to_step=None, _edit_step=None, _edit_text=None):
     """
     Walk through the conversation step by step.
     In dry-run mode (default), responses come from the cache.
@@ -885,6 +888,8 @@ def _make_replay_function(replay_steps_body: str) -> str:
     Args:
         from_step: First step index to execute (inclusive, None = start)
         to_step: Last step index to execute (inclusive, None = end)
+        _edit_step: Counterfactual edit target (internal, from --edit)
+        _edit_text: Replacement user text for _edit_step (internal)
     """
     messages: list[dict] = []
     step_log: list[dict] = []
@@ -964,7 +969,7 @@ def _make_parse_args_function() -> str:
     parser = argparse.ArgumentParser(
         description="hermes-unroll replayer - reproduces and analyses agent traces"
     )
-    parser.add_argument("--live", action="store_true", help="Execute real LLM calls (needs API key; pip install openai for SDK path, else stdlib urllib)")
+    parser.add_argument("--live", action="store_true", help="Execute real LLM calls — model-only: tools stay cached/stubbed (needs API key; pip install openai for SDK path, else stdlib urllib)")
     parser.add_argument("--from", dest="from_step", type=int, default=None,
                         help="Start from step N (inclusive)")
     parser.add_argument("--to", dest="to_step", type=int, default=None,

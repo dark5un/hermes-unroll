@@ -50,6 +50,15 @@ versions follow [Semantic Versioning](https://semver.org/).
   (count from `--from`) instead of truncating display. Structured
   secret-key redaction now also applies to event payloads (e.g. JWTs under
   `token` keys that match no text pattern).
+- Live/counterfactual semantics, Option A (UN-5/UN-6/UN-13): live replay is
+  model-only (tools cached/stubbed); `--allow-destructive` errors under
+  `--live`. `--edit` targets a `user_message` step, applies the edit to the
+  input before replay (no more post-hoc result mutation), and saves to a
+  new file — never over the source trace. One safety policy from one
+  source: `safety.POLICY` (extended patterns: redirection, `mv`,
+  `find -delete`, `git reset --hard`, package removal, chained commands)
+  embedded as `_is_destructive()` in generated traces; denylist documented
+  as not-a-sandbox with read-only allowlist guidance.
 
 **Existing artifacts:** traces written before this fix may contain an
 unredacted system prompt / profile block at mode 0644. Re-permission with

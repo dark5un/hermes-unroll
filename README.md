@@ -147,17 +147,23 @@ omit skipped steps from `timing_log` while still recording `from_step` /
 
 | Flag | Meaning |
 |------|---------|
-| `--live` | Execute real LLM calls (default: dry-run from `RESPONSE_CACHE`) |
+| `--live` | Model-only live LLM calls (tools stay cached/stubbed; default is dry-run from `RESPONSE_CACHE`) |
 | `--from N --to M` | Replay step range; skipped steps omitted from `timing_log`; `from_step`/`to_step` in result |
 | `--stop-at N` | Execute only the first N steps from `--from` (bounds execution, not display) |
 | `--substitute-tool '<event_id> <json_args>'` | Replace a tool call's dispatched args (matched by stable event id) |
 | `--show-state` | Print step/message counts after replay |
 | `--diff OTHER.py` | Step diff vs another trace (safe `ast.literal_eval` loader, never `exec`) |
-| `--edit '<step> <new-text>'` | Counterfactual: mutate message, replay suffix, save `*_edit_<ts>.py` (never overwrites) |
+| `--edit '<step> <new-text>'` | Counterfactual: edit a user_message input, replay suffix from that step, save `*_edit_<ts>.py` (never overwrites source) |
 | `--engine openai\|pydantic` | Live engine (default openai; stdlib urllib fallback, no hard deps) |
-| `--allow-destructive` | Consent gate: without it, terminal/patch/write_file/execute_code print `[DRY-RUN]` and skip |
+| `--allow-destructive` | Dry-run consent gate only: without it destructive tools print `[DRY-RUN]` and skip; under `--live` it is an error (exit 2) — it can never grant execution |
 
 ### Live replay prerequisites
+
+Live replay is model-only: `--live` serves LLM steps from the provider and
+tool calls from cache/stub. Faithful live tool replay would need the host's
+executor (permissions, approvals, middleware) — it does not belong in a
+standalone artifact, so it is out of scope and `--allow-destructive` is an
+error under `--live` rather than an execution grant.
 
 `--live` needs an API key: `OPENAI_API_KEY` → `HERMES_API_KEY` →
 `~/.hermes/.env`, and an OpenAI-compatible `base_url` (captured in
@@ -188,7 +194,7 @@ arguments as dispatch defaults.
 | Trace file confidentiality | `generator.py` | Atomic write (temp + fsync + `os.replace`), mode `0600`, traces dir `0700`; content-hash filename suffix — colliding session ids never overwrite |
 | Lifecycle | `__init__.py` | `on_session_end` fires per turn (state update only, no write); `on_session_finalize` is the single exactly-once write point; `TraceRecorder.finalize()` seals the recorder |
 | Cost ledger | `pricing.py` | `COST = {model, cost_usd, input_tokens, output_tokens}` + `# Cost: $…` header; `pricing_overrides` |
-| Dry-run guard | `safety.py` | Destructive tools skip unless `--allow-destructive` |
+| Dry-run guard | `safety.py` (`POLICY` — single source) | Name + command-pattern policy (rm, redirection, mv, find-delete, git reset --hard, pkg removal, chaining); `_is_destructive()` embedded in traces; denylist is not a sandbox — unattended replay should use read-only tools |
 | HTML diff | `diff.py` | `render_html_diff()` — self-contained report, no deps |
 | Pulse auto-score | `__init__.py` | Opt-in via `UNROLL_PULSE_AUTO_SCORE=1` (default off); writes `<trace>.py.pulse.json`, fail-open |
 
