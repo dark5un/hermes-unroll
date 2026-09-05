@@ -5,12 +5,19 @@ Python program that reproduces the conversation.
 """
 
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-TRACES_DIR = Path.home() / ".hermes" / "traces" / "unrolled"
+
+def _get_traces_dir() -> Path:
+    """Resolve the traces output directory respecting $HERMES_HOME."""
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        return Path(hermes_home) / "traces" / "unrolled"
+    return Path.home() / ".hermes" / "traces" / "unrolled"
 
 
 def generate_trace_program(
@@ -26,9 +33,10 @@ def generate_trace_program(
 
     Returns the absolute path to the written file.
     """
-    TRACES_DIR.mkdir(parents=True, exist_ok=True)
+    traces_dir = _get_traces_dir()
+    traces_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{safe_filename(session_id or 'unsaved')}.py"
-    filepath = TRACES_DIR / filename
+    filepath = traces_dir / filename
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     messages = reconstruct_messages(events)
