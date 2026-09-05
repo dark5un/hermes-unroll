@@ -78,10 +78,9 @@ Restart Hermes. Every conversation produces a trace at `~/.hermes/traces/unrolle
 ```
 ~/.hermes/plugins/hermes-unroll/
 ├── plugin.yaml              # Hermes plugin manifest
-├── __init__.py              # Hook wiring
-├── hermes_unroll/
-│   ├── tracer.py            # Events + recorder
-│   └── generator.py         # Code generator
+├── __init__.py              # Hook wiring (register + 4 hooks)
+├── tracer.py                # TraceEvent, TraceSession, TraceRecorder
+├── generator.py             # Code generator: events → .py file
 ├── tests/
 │   ├── test_tracer.py       # 40 tests
 │   └── test_generator.py
