@@ -2,6 +2,7 @@
 
 import ast
 from pathlib import Path
+from typing import ClassVar
 
 from generator import (
     count_llm_calls,
@@ -331,3 +332,133 @@ class TestGenerateTraceProgram:
     def test_cleanup_traces(self):
         """Remove generated trace files after test."""
         # No-op — we generate to TRACES_DIR which is fine
+
+
+class TestAllEventKindsSurviveGeneration:
+    """All 12 event kinds survive generation into replay source."""
+
+    ALL_KINDS: ClassVar[list] = [
+        "system_prompt",
+        "user_message",
+        "llm_call",
+        "tool_call",
+        "final_response",
+        "pre_api_request",
+        "post_api_request",
+        "api_request_error",
+        "subagent_start",
+        "subagent_stop",
+        "on_stream_delta",
+        "pre_tool_call",
+    ]
+
+    def _all_kind_events(self):
+        return [
+            TraceEvent(kind="system_prompt", data={"text": "You are helpful."}),
+            TraceEvent(kind="user_message", data={"text": "Do the thing"}),
+            TraceEvent(kind="llm_call", data={"response_text": "Working on it"}),
+            TraceEvent(
+                kind="tool_call",
+                data={"tool_call_id": "call_1", "name": "web_search", "content": "{}"},
+            ),
+            TraceEvent(kind="final_response", data={"text": "Done"}),
+            TraceEvent(
+                kind="pre_api_request",
+                data={"api_call_count": 1, "approx_input_tokens": 10, "retry_count": 0},
+            ),
+            TraceEvent(
+                kind="post_api_request",
+                data={
+                    "finish_reason": "stop",
+                    "api_duration_ms": 120,
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "thinking_content": "hmm",
+                    "reasoning_content": "therefore",
+                },
+            ),
+            TraceEvent(
+                kind="api_request_error",
+                data={"status_code": 500, "reason": "boom"},
+            ),
+            TraceEvent(
+                kind="subagent_start",
+                data={"child_role": "researcher", "child_goal": "find facts"},
+            ),
+            TraceEvent(
+                kind="subagent_stop",
+                data={"child_role": "researcher", "child_summary": "found them"},
+            ),
+            TraceEvent(kind="on_stream_delta", data={"kind": "text", "delta": "hi"}),
+            TraceEvent(kind="pre_tool_call", data={"name": "web_search"}),
+        ]
+
+    def test_all_12_event_kinds_survive_generation(self):
+        """Every one of the 12 kinds appears in the generated replay source."""
+        events = self._all_kind_events()
+        path = generate_trace_program(events, session_id="test_all_12_kinds")
+        code = Path(path).read_text(encoding="utf-8")
+        for kind in self.ALL_KINDS:
+            assert kind in code, f"event kind {kind!r} missing from generated source"
+        # Generated file stays valid Python.
+        assert ast.parse(code) is not None
+
+    def test_timeline_covers_all_12_events(self):
+        """TIMELINE literal in source carries one entry per event."""
+        import json
+        import re
+
+        events = self._all_kind_events()
+        path = generate_trace_program(events, session_id="test_all_12_timeline")
+        code = Path(path).read_text(encoding="utf-8")
+        m = re.search(r"^TIMELINE = (\[.*?^\])", code, re.MULTILINE | re.DOTALL)
+        assert m is not None, "TIMELINE assignment not found in generated source"
+        timeline = json.loads(m.group(1))
+        assert len(timeline) == 12
+        kinds = [e["kind"] for e in timeline]
+        for kind in self.ALL_KINDS:
+            assert kind in kinds, f"TIMELINE missing kind {kind!r}"
+
+
+class TestGeneratedSourceConstants:
+    """TIMELINE + RESPONSE_CACHE + REASONING_BLOCKS + STATE_GRAPH present."""
+
+    def test_required_constants_present_in_generated_source(self):
+        """Generated source defines all four replay constants."""
+        events = [
+            TraceEvent(kind="user_message", data={"text": "hello"}),
+            TraceEvent(
+                kind="post_api_request",
+                data={
+                    "finish_reason": "stop",
+                    "usage": {"input_tokens": 3, "output_tokens": 4},
+                    "thinking_content": "thinking here",
+                    "reasoning_content": "",
+                },
+            ),
+            TraceEvent(kind="llm_call", data={"response_text": "hi"}),
+        ]
+        path = generate_trace_program(events, session_id="test_constants_present")
+        code = Path(path).read_text(encoding="utf-8")
+        assert "TIMELINE = " in code
+        assert "RESPONSE_CACHE = " in code
+        assert "REASONING_BLOCKS = " in code
+        assert "STATE_GRAPH = " in code
+        assert ast.parse(code) is not None
+
+    def test_reasoning_blocks_populated_from_thinking_content(self):
+        """Thinking content in post_api_request lands in REASONING_BLOCKS."""
+        events = [
+            TraceEvent(
+                kind="post_api_request",
+                data={
+                    "finish_reason": "stop",
+                    "usage": {},
+                    "thinking_content": "deep thought",
+                    "reasoning_content": "",
+                },
+            ),
+        ]
+        path = generate_trace_program(events, session_id="test_rb_populated")
+        code = Path(path).read_text(encoding="utf-8")
+        assert "deep thought" in code
+        assert "REASONING_BLOCKS = " in code

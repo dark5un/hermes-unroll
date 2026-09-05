@@ -62,6 +62,61 @@ def generate_trace_program(
     return str(filepath.resolve())
 
 
+def _event_kind(e) -> str:
+    if isinstance(e, dict):
+        return str(e.get("kind", "?"))
+    return str(getattr(e, "kind", "?"))
+
+
+def _build_dependency_map(events: list) -> dict[int, list[int]]:
+    """Build a step dependency map (Phase E1).
+
+    Rules (step index -> list of dep step indices):
+    - llm_call depends on the most recent prior user_message plus all
+      prior tool_call steps since that message (or all prior tool_calls
+      when no user_message precedes it).
+    - tool_call depends on the most recent prior llm_call.
+    - final_response depends on the last llm_call.
+    - everything else depends on the previous step ([] for step 0).
+    """
+    kinds = [_event_kind(e) for e in events]
+    deps: dict[int, list[int]] = {}
+    for i, kind in enumerate(kinds):
+        if kind == "llm_call":
+            prior_user = -1
+            for j in range(i - 1, -1, -1):
+                if kinds[j] == "user_message":
+                    prior_user = j
+                    break
+            if prior_user >= 0:
+                tools_since = [
+                    j for j in range(prior_user + 1, i) if kinds[j] == "tool_call"
+                ]
+                deps[i] = [prior_user, *tools_since]
+            else:
+                deps[i] = [j for j in range(i) if kinds[j] == "tool_call"]
+        elif kind == "tool_call":
+            prev_llm = -1
+            for j in range(i - 1, -1, -1):
+                if kinds[j] == "llm_call":
+                    prev_llm = j
+                    break
+            deps[i] = [prev_llm] if prev_llm >= 0 else []
+        elif kind == "final_response":
+            last_llm = -1
+            for j in range(i - 1, -1, -1):
+                if kinds[j] == "llm_call":
+                    last_llm = j
+                    break
+            if last_llm >= 0:
+                deps[i] = [last_llm]
+            else:
+                deps[i] = [i - 1] if i > 0 else []
+        else:
+            deps[i] = [i - 1] if i > 0 else []
+    return deps
+
+
 def _build_timeline(events: list, started_at: float) -> list[dict]:
     tl = []
     for e in events:
@@ -667,6 +722,10 @@ def _build_program_text(
     jprov = json.dumps(provcfg, indent=2)
     graph = _build_state_graph(events, started_at)
     jgraph = json.dumps(graph, indent=2, ensure_ascii=False)
+    depmap = _build_dependency_map(events)
+    # int-keyed Python literal (JSON would stringify the keys and break
+    # int lookups in the generated program).
+    jdeps = repr({int(k): list(v) for k, v in depmap.items()})
     cost = {
         "model": model,
         "cost_usd": float(cost_usd),
@@ -709,6 +768,7 @@ def _build_program_text(
         JRB=jrb,
         JCACHE=jcache,
         JGRAPH=jgraph,
+        JDEPS=jdeps,
         JCOST=jcost,
         COST_STR=cost_str,
         REPLAY_FUNC=replay_func,
@@ -798,6 +858,8 @@ def _make_replay_function(replay_steps_body: str) -> str:
         "timing_log": timing_log,
         "response_cache": RESPONSE_CACHE,
         "state_graph": STATE_GRAPH,
+        "dependencies": DEPENDENCIES,
+        "cost": COST,
     }}
     return result'''
 

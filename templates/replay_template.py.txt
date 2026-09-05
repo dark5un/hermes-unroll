@@ -49,6 +49,7 @@ REASONING_BLOCKS = $JRB
 RESPONSE_CACHE = $JCACHE
 COST = $JCOST
 STATE_GRAPH = $JGRAPH
+DEPENDENCIES = $JDEPS
 TOOL_SCHEMAS = $TOOL_SCHEMAS_JSON
 PROVIDER_CONFIG = $PROVIDER_JSON
 LIVE = False
@@ -72,6 +73,81 @@ def dispatch_tool(name, args, default=None, step=None):
         if isinstance(_entry, dict) and "result" in _entry:
             return _entry["result"]
     return default
+
+
+def _load_other_timeline(path):
+    """Load TIMELINE from another trace file without exec (safe).
+
+    Parses the AST for a top-level TIMELINE assignment and literal-evals
+    it, so arbitrary code in the other file never runs.
+    """
+    import ast as _ast
+    with open(path, encoding="utf-8") as _f:
+        _src = _f.read()
+    try:
+        _tree = _ast.parse(_src)
+        for _node in _tree.body:
+            if isinstance(_node, _ast.Assign):
+                for _t in _node.targets:
+                    if isinstance(_t, _ast.Name) and _t.id == "TIMELINE":
+                        return _ast.literal_eval(_node.value)
+    except Exception:
+        pass
+    raise ValueError("TIMELINE not found in " + str(path))
+
+
+def _transitive_invalidated(edit_idx):
+    """All steps depending transitively on edit_idx via DEPENDENCIES."""
+    _norm = {}
+    try:
+        _items = (DEPENDENCIES or {}).items()
+    except AttributeError:
+        return [edit_idx]
+    for _k, _v in _items:
+        try:
+            _norm[int(_k)] = [int(_x) for _x in (_v or [])]
+        except (TypeError, ValueError):
+            continue
+    _children = {}
+    for _s, _ds in _norm.items():
+        for _d in _ds:
+            _children.setdefault(_d, []).append(_s)
+    invalidated_steps = []
+    _queue = [int(edit_idx)]
+    _seen = {int(edit_idx)}
+    while _queue:
+        _cur = _queue.pop(0)
+        invalidated_steps.append(_cur)
+        for _nxt in _children.get(_cur, []):
+            if _nxt not in _seen:
+                _seen.add(_nxt)
+                _queue.append(_nxt)
+    invalidated_steps.sort()
+    return invalidated_steps
+
+
+def _save_edited_trace(result, edit_step, new_text):
+    """Write the edited replay to a new file; never overwrites the original.
+
+    The new filename is the original stem plus _edit_<timestamp>. The
+    original file is only read, never written.
+    """
+    _stamp = time.strftime("%Y%m%d_%H%M%S")
+    _src = os.path.abspath(__file__)
+    _base, _ext = os.path.splitext(_src)
+    _dst = _base + "_edit_" + _stamp + (".py" if not _ext else _ext)
+    if os.path.abspath(_dst) == _src:
+        _dst = _src + ".edit_" + _stamp + ".py"
+    with open(_src, encoding="utf-8") as _f:
+        _orig = _f.read()
+    _header = (
+        "\n# EDIT step=" + str(edit_step)
+        + " new_text=" + json.dumps(str(new_text)) + "\n"
+    )
+    with open(_dst, "w", encoding="utf-8") as _f:
+        _f.write(_orig + _header)
+    print("Saved edited trace: " + _dst)
+    return _dst
 
 try:
     from langgraph.graph import END, StateGraph
@@ -124,10 +200,27 @@ if __name__ == "__main__":
     if args.diff:
         other_timeline = None
         try:
-            other_globals = {}
-            with open(args.diff) as f:
-                exec(f.read(), other_globals)
-            other_timeline = other_globals.get("TIMELINE", [])
+            import ast as _ast
+            with open(args.diff) as _f:
+                _diff_text = _f.read()
+            try:
+                _diff_tree = _ast.parse(_diff_text, filename=args.diff)
+            except SyntaxError as _se:
+                print(f"Error loading other trace: cannot parse file: {_se}")
+                sys.exit(1)
+            _wanted = ("TIMELINE", "USAGE", "STATE_GRAPH", "COST", "MODEL", "SESSION_ID")
+            _other = {}
+            for _node in _diff_tree.body:
+                if isinstance(_node, _ast.Assign):
+                    for _t in _node.targets:
+                        if isinstance(_t, _ast.Name) and _t.id in _wanted:
+                            try:
+                                _other[_t.id] = _ast.literal_eval(_node.value)
+                            except Exception:
+                                pass
+            other_timeline = _other.get("TIMELINE", [])
+        except SystemExit:
+            raise
         except Exception as e:
             print(f"Error loading other trace: {e}")
             sys.exit(1)
@@ -143,7 +236,39 @@ if __name__ == "__main__":
                     print(f"  Step {i}: ours {o[0]}@{o[1]}ms vs theirs {t[0]}@{t[1]}ms")
         sys.exit(0)
     if args.edit:
-        print(f"Edit mode: {args.edit} (counterfactual stub)")
+        try:
+            _edit_s, _edit_text = args.edit.split(" ", 1)
+            _edit_idx = int(_edit_s)
+        except Exception:
+            print("Error: --edit expects '<step> <new-text>'")
+            sys.exit(2)
+        if _edit_idx < 0 or _edit_idx >= len(TIMELINE):
+            print(f"Error: edit step {_edit_idx} out of range 0-{len(TIMELINE) - 1}")
+            sys.exit(2)
+        invalidated_steps = _transitive_invalidated(_edit_idx)
+        print(f"Edit step {_edit_idx}: {_edit_text[:120]}")
+        print(f"Invalidated steps: {invalidated_steps}")
+        result = replay(from_step=_edit_idx, to_step=args.to_step)
+        try:
+            _kind_at = TIMELINE[_edit_idx].get("kind", "")
+            if _kind_at == "user_message":
+                for _m in result.get("messages", []):
+                    if _m.get("role") == "user":
+                        _m["content"] = _edit_text
+                        break
+            result["edit"] = {
+                "step": _edit_idx,
+                "new_text": _edit_text,
+                "invalidated_steps": list(invalidated_steps),
+            }
+            result["invalidated_steps"] = list(invalidated_steps)
+        except Exception as _e:
+            print(f"Warning: could not apply edit mutation: {_e}")
+        _save_edited_trace(result, _edit_idx, _edit_text)
+        print()
+        print("=== STRUCTURED OUTPUT ===")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        sys.exit(0)
     result = replay(from_step=args.from_step, to_step=args.to_step)
     if args.stop_at is not None:
         steps = result.get("steps", [])[:args.stop_at]
