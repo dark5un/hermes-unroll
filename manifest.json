@@ -1,6 +1,6 @@
 {
   "name": "hermes-unroll",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Unroll the agent loop into a reproducible Python program — full event depth, reasoning, response cache, and replay",
   "hooks": [
     "on_session_start", "post_llm_call", "post_tool_call",

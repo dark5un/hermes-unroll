@@ -1,5 +1,11 @@
 # hermes-unroll
 
+> Experimental research tooling. Replay modes: **dry-run cache replay**
+> (default, exact), **model-only live replay** (`--live`: LLM steps from
+> the provider, tools cached/stubbed — live-with-tools is out of scope).
+> Inspection is AST-based (`ast.literal_eval`, never `exec`); safety checks
+> are heuristic pattern matching, not sandboxing.
+
 **A Hermes Agent plugin that captures every session's execution trace and compiles it into a reproducible Python program. The trace IS the program.**
 
 Every LLM conversation is an ephemeral loop — decisions made, tools called, reasoning chains spun — and then it's gone. hermes-unroll captures every decision point as a structured event and, at session end, compiles the stream into a self-contained `.py` file.
@@ -112,7 +118,7 @@ Restart Hermes. Every conversation produces a trace at `~/.hermes/traces/unrolle
 
 ```bash
 uv sync
-uv run pytest          # 115 tests pass
+uv run pytest          # 170+ tests pass
 uv run ruff check .    # lint clean
 ```
 
