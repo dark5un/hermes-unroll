@@ -34,6 +34,7 @@ class TraceSession:
     tool_schemas: list = field(default_factory=list)
     provider_config: dict = field(default_factory=dict)
     active_skills: list = field(default_factory=list)
+    tags: list = field(default_factory=list)
 
 
 class TraceRecorder:
@@ -53,6 +54,7 @@ class TraceRecorder:
         provider: str = "",
         system_prompt: str = "",
         user_message: str = "",
+        tags: list | None = None,
     ) -> None:
         """Update session-level metadata fields."""
         self.session.session_id = session_id
@@ -60,6 +62,8 @@ class TraceRecorder:
         self.session.provider = provider
         self.session.system_prompt = system_prompt
         self.session.initial_user_message = user_message
+        if tags is not None:
+            self.session.tags = list(tags)
 
     def finalize(self) -> list[TraceEvent]:
         """Return the accumulated events list."""

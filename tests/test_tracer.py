@@ -190,3 +190,20 @@ class TestTraceRecorder:
             "subagent_start",
             "subagent_stop",
         ]
+
+class TestSessionTags:
+    """Session-level tags (C2-a capture side)."""
+
+    def test_tags_default_empty(self):
+        session = TraceSession(session_id="t", model="m", provider="p")
+        assert session.tags == []
+
+    def test_set_metadata_with_tags_round_trips(self):
+        r = TraceRecorder()
+        r.set_metadata(session_id="t", tags=["team-a", "feat-x"])
+        assert r.session.tags == ["team-a", "feat-x"]
+
+    def test_set_metadata_without_tags_keeps_default(self):
+        r = TraceRecorder()
+        r.set_metadata(session_id="t")
+        assert r.session.tags == []
